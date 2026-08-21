@@ -102,7 +102,7 @@ export default function ResetPasswordScreen() {
             <Text style={styles.status}>
               This reset link is invalid or has expired. Go back and request a new one.
             </Text>
-            <TouchableOpacity onPress={() => router.replace('/sign-in')}>
+            <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/sign-in'))}>
               <Text style={styles.link}>← Back to sign in</Text>
             </TouchableOpacity>
           </>

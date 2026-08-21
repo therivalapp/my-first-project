@@ -1581,7 +1581,12 @@ export default function LeagueScreen() {
   const mobileHeaderBlock = (
     <>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.replace('/home')}>
+          {/* Prefer real history: the Team hub is reached from Team Feed, the
+              Team Hub screen, Messages, Discover and Today's Weekly Leader, so
+              no single hardcoded destination is right for all of them. Falls
+              back to the Teams tab rather than Today — this screen belongs to
+              that section. */}
+          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/team-feed'))}>
             <Text style={styles.back}>← Back</Text>
           </TouchableOpacity>
           {isAdmin && (

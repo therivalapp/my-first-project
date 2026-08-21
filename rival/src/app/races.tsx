@@ -410,7 +410,7 @@ export default function RacesScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.replace('/home')}>
+          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}>
             <Text style={styles.back}>← Back</Text>
           </TouchableOpacity>
         </View>

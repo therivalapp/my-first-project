@@ -248,7 +248,7 @@ export default function LeagueSettingsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.replace({ pathname: '/team-hub', params: { id } })}>
+          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace({ pathname: '/team-hub', params: { id } }))}>
             <Text style={styles.back}>← Back</Text>
           </TouchableOpacity>
         </View>

@@ -190,7 +190,7 @@ export default function LiftsScreen() {
         <RivalTopNav active="activity" />
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.headerRow}>
-            <TouchableOpacity onPress={() => router.replace('/my-activities')}>
+            <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))}>
               <Text style={styles.back}>← Back</Text>
             </TouchableOpacity>
             <Text style={styles.headerTitle}>Personal Bests</Text>

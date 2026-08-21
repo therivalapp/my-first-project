@@ -833,7 +833,7 @@ export default function ScanWorkoutScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.replace('/my-activities')}>
+          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))}>
             <Text style={styles.back}>← Back</Text>
           </TouchableOpacity>
         </View>
