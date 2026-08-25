@@ -156,7 +156,7 @@ export default function FriendsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 

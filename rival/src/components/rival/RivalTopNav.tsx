@@ -34,14 +34,14 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
   // row instead of overlapping text on top of text.
   const narrow = width < BREAKPOINT_MOBILE_NAV;
   const insets = useSafeAreaInsets();
-  // The bottom nav is portaled straight to document.body below (to dodge an
-  // iOS Safari `position:fixed`-inside-nested-scroll bug), which puts it
-  // OUTSIDE the height-clamped wrapper _layout.tsx uses to work around the
-  // iOS-standalone visualViewport bug (see that file's comment). A plain
-  // `bottom: 0` on this portaled pill still measures against the oversized
-  // layout viewport, landing below the true visible area with dead space
-  // above it. Track the live gap between the layout and visual viewports
-  // ourselves and offset by it, so the pill hugs the REAL bottom edge.
+  // Keyboard-only offset. When the software keyboard opens, visualViewport
+  // shrinks below the layout viewport and this keeps the pill above it.
+  // It is NOT what handles the iOS-standalone viewport split — measured on
+  // device (2026-08-24, standalone:Y): innerHeight 793 === visualViewport
+  // .height 793, so this term is 0 there. The split is between the LAYOUT
+  // viewport (793, what `position:fixed` resolves against) and the true
+  // screen (852, what 100vh resolves to); that is corrected in CSS on the
+  // style itself — see `bottom` on bottomNavOuter below.
   const [navBottomOffset, setNavBottomOffset] = useState(0);
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.visualViewport) return;
@@ -124,18 +124,31 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
   // there as before (bottomNavPortalTarget is null on native).
   const bottomNavPortalTarget = Platform.OS === 'web' && typeof document !== 'undefined' ? document.body : null;
   const bottomNav = (
-    // Outer wrapper is flush with the true edge and reserves the home-indicator
-    // clearance, but carries no visible chrome of its own — the pill's actual
-    // background/border/rounding lives on the INNER view, sized to hug just the
-    // icons/labels. Giving the clearance padding to the pill itself (as before)
-    // stretched its own visible background/border down through that empty
-    // space, reading as a tall bar with dead space inside it.
-    // paddingBottom is the home-indicator clearance. insets.bottom is 34pt on a
-    // notched iPhone, which floated the pill a visible 40pt off the bottom edge
-    // and read as dead space under the nav. The indicator itself only needs
-    // ~14pt to clear, so trim the inset rather than honouring it wholesale;
-    // browser tabs (insets.bottom === 0) keep the original small padding.
-    <View style={[styles.bottomNavOuter, { bottom: navBottomOffset, paddingBottom: insets.bottom > 0 ? Math.max(insets.bottom - 20, 8) : 6 } as any]}>
+    // `calc(100% - 100vh)` is the iOS-standalone correction. For a fixed
+    // element 100% is the LAYOUT viewport (793 on device) while 100vh is the
+    // TRUE screen (852), so this evaluates to -59px and pushes the pill down
+    // onto the real bottom edge. In any normal browser the two are equal and
+    // it evaluates to 0, leaving behaviour there unchanged. navBottomOffset
+    // adds the keyboard case on top.
+    //
+    // paddingBottom lifts the pill clear of the home indicator, and lives on
+    // this OUTER wrapper (no background of its own) so the visible pill keeps
+    // its compact hug-the-content size — putting it on the pill instead
+    // stretches its own background into a tall bar (80989da relearned this).
+    // Trimmed from the full 34pt inset: the indicator only occupies the
+    // bottom ~21px, and the full inset floated the pill far enough off the
+    // edge to read as dead space. Unlike every earlier attempt at this, the
+    // gap is now safe — the shell reaches the true 852 bottom, so what shows
+    // under the pill is the app's own background, not bare page canvas.
+    <View
+      style={[
+        styles.bottomNavOuter,
+        {
+          bottom: `calc(100% - 100vh + ${navBottomOffset}px)`,
+          paddingBottom: insets.bottom > 0 ? Math.max(insets.bottom - 12, 8) : 6,
+        } as any,
+      ]}
+    >
       <View style={[styles.bottomNav, navShrunk && styles.bottomNavShrunk]}>
         {LINKS.map((l) => {
           const isActive = active === l.key;

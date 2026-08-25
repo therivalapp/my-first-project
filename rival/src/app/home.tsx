@@ -804,7 +804,14 @@ export default function HomeScreen() {
         </>
       )}
       {mobile && <View style={styles.mBgFixed} />}
-      <SafeAreaView style={styles.container}>
+      {/* edges omits 'bottom': the default bottom edge pads this container by
+          the home-indicator inset (34pt on device), which ended the scrollable
+          region at 818 instead of the true 852 screen bottom and clipped the
+          last card there. The bottom nav is a floating overlay, not in-flow,
+          so content is meant to run underneath it all the way to the edge —
+          the clearance that keeps the last card clear of the pill is
+          contentMobile's own paddingBottom, not a padded container. */}
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <RivalTopNav
           active="today"
           centerSlot={mobile ? (

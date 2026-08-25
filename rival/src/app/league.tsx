@@ -1563,7 +1563,7 @@ export default function LeagueScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.flatContainer}>
+      <SafeAreaView style={styles.flatContainer} edges={['top', 'left', 'right']}>
         <View style={styles.centered}><Text style={styles.loadingText}>Loading...</Text></View>
       </SafeAreaView>
     );
@@ -1571,7 +1571,7 @@ export default function LeagueScreen() {
 
   if (!league) {
     return (
-      <SafeAreaView style={styles.flatContainer}>
+      <SafeAreaView style={styles.flatContainer} edges={['top', 'left', 'right']}>
         <View style={styles.centered}><Text style={styles.loadingText}>Team not found.</Text></View>
       </SafeAreaView>
     );
@@ -2037,7 +2037,7 @@ export default function LeagueScreen() {
         focalPoint="55% 65%"
       />
       <View style={styles.scrim} />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Shared persistent nav, matching every other screen — this page had
           grown its own bespoke desktop-only nav bar (different logo styling,
           wrong Teams link pointing at /home, no avatar/rank, hidden on

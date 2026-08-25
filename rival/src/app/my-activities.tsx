@@ -974,7 +974,7 @@ export default function MyActivitiesScreen() {
         focalPoint="50% 42%"
       />
       <View style={styles.scrim} />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         {/* Today's mobile screen has no photo at all behind its top nav (flat
             #131313), so its translucent bar reads as solid dark. This screen's
             photo (bright sky/cloud, brightest right at the top) shows through

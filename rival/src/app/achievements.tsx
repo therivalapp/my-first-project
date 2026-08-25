@@ -59,7 +59,7 @@ export default function AchievementsScreen() {
   const earnedCount = ACHIEVEMENTS.filter((a) => earnedIds.has(a.id)).length;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
 

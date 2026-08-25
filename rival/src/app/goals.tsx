@@ -378,7 +378,7 @@ export default function GoalsScreen() {
   const filterOptions = goalType === 'elevation' ? ELEVATION_FILTERS : DISTANCE_FILTERS;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
 

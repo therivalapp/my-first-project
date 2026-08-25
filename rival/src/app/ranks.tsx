@@ -27,7 +27,7 @@ export default function RanksScreen() {
   const currentLevel = getLevel(totalXp);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
 

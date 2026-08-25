@@ -186,7 +186,7 @@ export default function LiftsScreen() {
         focalPoint="55% 45%"
       />
       <View style={styles.scrim} />
-      <SafeAreaView style={styles.safe}>
+      <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
         <RivalTopNav active="activity" />
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.headerRow}>

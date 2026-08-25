@@ -405,7 +405,7 @@ export default function RacesScreen() {
   const displayed = activeTab === 'mine' ? myRaces : activeTab === 'completed' ? completedRaces : friendRaces;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
 

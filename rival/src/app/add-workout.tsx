@@ -33,7 +33,7 @@ export default function AddWorkoutScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <ImageBackground
         source={require('../../assets/images/backgrounds/optimized/overhead-squat-warehouse-gym.jpg')}
         style={styles.bg}

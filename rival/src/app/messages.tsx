@@ -110,7 +110,7 @@ export default function MessagesScreen() {
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.mBgFixed} />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <RivalTopNav />
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.title}>Messages</Text>

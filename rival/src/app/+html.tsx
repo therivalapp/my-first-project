@@ -34,6 +34,21 @@ export default function Root({ children }: { children: React.ReactNode }) {
             through — never a height/overflow override. */}
         <style dangerouslySetInnerHTML={{ __html: `
           html, body, #root { background-color: #0e0e0e; }
+          /* Expo's reset gives html/body/#root height:100%, which resolves
+             against the LAYOUT viewport. On iOS standalone that is 59px
+             shorter than the real screen (measured on device 2026-08-24:
+             layout 793 vs screen/100vh 852), and body also carries
+             overflow:hidden — so the bottom 59px of any in-flow content was
+             clipped away, cutting the last card off mid-shape. The nav pill
+             and the fixed backgrounds escaped it only because position:fixed
+             ignores ancestor overflow, which is why they reached the true
+             bottom while scroll content did not.
+
+             100vh is the true screen height, so this un-clips that strip.
+             It is a height correction, NOT the document-scroll override the
+             comment above warns against: overflow is untouched, so the app
+             shell still scrolls internally and index.tsx still flows. */
+          html, body, #root { height: 100vh; }
         ` }} />
       </head>
       <body>{children}</body>

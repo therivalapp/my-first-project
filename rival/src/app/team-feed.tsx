@@ -383,7 +383,7 @@ export default function TeamFeedScreen() {
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.mBgFixed} />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <RivalTopNav active="teams" />
         <ScrollView
           contentContainerStyle={[styles.content, mobile && styles.contentMobile]}

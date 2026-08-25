@@ -624,7 +624,7 @@ export default function CreateLeagueScreen() {
         focalPoint="40% 55%"
       />
       <View style={styles.scrim} />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <RivalTopNav active="teams" />
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.panel}>

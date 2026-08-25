@@ -137,7 +137,7 @@ export default function StatsScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <View style={styles.centered}>
           <Text style={styles.loadingText}>Loading…</Text>
         </View>
@@ -153,7 +153,7 @@ export default function StatsScreen() {
   const seasonDaysLeft = daysUntilSeasonEnd();
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
 

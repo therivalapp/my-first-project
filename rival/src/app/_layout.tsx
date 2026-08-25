@@ -24,19 +24,29 @@ export default function RootLayout() {
     registerForPushNotifications();
   }, []);
 
-  // iOS standalone (home-screen) web apps have a documented bug: the page's
-  // layout viewport (what 100vh/100dvh and position:fixed measure against)
-  // can be reported taller than what's actually visible on screen — a fixed
-  // bottom nav then pins correctly to the bottom of that oversized virtual
-  // page, landing below the real visible area, with dead space in between
-  // that no amount of scrolling reveals. window.visualViewport reports the
-  // TRUE visible height, so measure that and clamp the whole app to it
-  // instead of trusting vh units/fixed positioning to get it right alone.
+  // iOS standalone (home-screen) web apps report two different heights, and
+  // which one is bigger is the opposite of what this clamp originally
+  // assumed. Measured on device 2026-08-24 (standalone:Y, iPhone 15 Pro):
+  //
+  //   window.innerHeight / visualViewport.height / documentElement.clientHeight = 793
+  //   100vh / window.screen.height                                              = 852
+  //
+  // The LAYOUT viewport (793) is 59px SHORTER than the real screen (852), so
+  // clamping the app to visualViewport.height ended the shell — and every
+  // background painted inside it — 59px above the true bottom edge, leaving a
+  // strip of bare page canvas (#0e0e0e) below it that read as dead space
+  // under the bottom nav. Size to 100vh (the real screen) instead. Keep
+  // measuring visualViewport, but only to SHRINK for the software keyboard —
+  // never to cap the resting height below the screen.
   const [viewportHeight, setViewportHeight] = useState<number | undefined>(undefined);
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined' || !window.visualViewport) return;
     const vv = window.visualViewport;
-    const update = () => setViewportHeight(vv.height);
+    const update = () => {
+      // Only clamp when the visual viewport is genuinely smaller than the
+      // layout viewport — i.e. the keyboard is up. Otherwise let 100vh win.
+      setViewportHeight(vv.height < window.innerHeight ? vv.height : undefined);
+    };
     update();
     vv.addEventListener('resize', update);
     return () => vv.removeEventListener('resize', update);
@@ -50,7 +60,23 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <View style={Platform.OS === 'web' ? { height: viewportHeight ?? '100dvh', overflow: 'hidden' } as any : { flex: 1 }}>
+      {/* position:fixed, not a plain in-flow block. Expo's reset gives <body>
+          height:100% — which resolves against the SHORT layout viewport (793
+          on device) — together with overflow:hidden, so an in-flow shell was
+          clipped at 793 no matter what height it asked for, cutting the last
+          card off above the true screen bottom. A fixed element is not
+          clipped by an ancestor's overflow, which is exactly why the portaled
+          nav pill and the fixed backgrounds already reached 852 while scroll
+          content could not. Anchoring the shell the same way lets it own the
+          full screen independently of body's height.
+
+          100vh, not 100dvh: on iOS standalone dvh resolves to that same short
+          793 viewport; 100vh is the one that reaches the true 852. */}
+      <View
+        style={Platform.OS === 'web'
+          ? { position: 'fixed', top: 0, left: 0, right: 0, height: viewportHeight ?? '100vh', overflow: 'hidden' } as any
+          : { flex: 1 }}
+      >
         <Stack screenOptions={{ headerShown: false }} />
       </View>
     </SafeAreaProvider>

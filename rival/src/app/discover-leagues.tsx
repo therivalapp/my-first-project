@@ -331,7 +331,7 @@ export default function DiscoverLeaguesScreen() {
         focalPoint="43% 42%"
       />
       <View style={styles.scrim} />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="teams" />
       <ScrollView
         contentContainerStyle={styles.content}

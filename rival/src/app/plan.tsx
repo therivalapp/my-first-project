@@ -202,7 +202,7 @@ export default function PlanScreen() {
   const projectedTotal = Math.round((currentWeekXp + totalPlannedXp) * 10) / 10;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
 

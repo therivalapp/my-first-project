@@ -420,7 +420,7 @@ export default function ProfileScreen() {
 
   if (loading || !isOwnProfile) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <View style={styles.centered}>
           <Text style={styles.loadingText}>Loading…</Text>
         </View>
@@ -740,7 +740,7 @@ export default function ProfileScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav />
       <ScrollView
         contentContainerStyle={styles.content}
