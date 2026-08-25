@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Platform, ScrollView, Image, ImageBackground, TouchableOpacity, RefreshControl, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useWindowDimensions } from 'react-native';
@@ -134,6 +134,97 @@ type FeedPost =
       teamNames: string[];
     };
 
+// One page of activities. The feed used to fetch a single fixed batch capped
+// three separate ways — a 14-day window, .limit(60), and a .slice(0, 40) — all
+// of them shared across EVERY member of every team you're in. On an active
+// team a few prolific members exhausted that budget, so your own recent
+// activities could vanish from your feed and nothing older than a fortnight
+// was reachable at all. Replaced with cursor pagination: no time window, and
+// scrolling loads the next page from where the last one ended.
+const PAGE_SIZE = 20;
+
+// Everything a feed row needs that is NOT the row itself — resolved once per
+// refresh and reused by every subsequent page, so paging doesn't re-query the
+// roster/lift/insight data on every scroll.
+type FeedContext = {
+  memberIds: string[];
+  teamsForUser: Record<string, string[]>;
+  teamNameById: Record<string, string>;
+  nameMap: Record<string, string>;
+  liftMaxMap: Map<string, number>;
+  insightHistoryByUser: Record<string, InsightActivity[]>;
+};
+
+function findPbLift(ctx: FeedContext, userId: string, exercises: any[] | null): string | null {
+  if (!exercises) return null;
+  for (const ex of exercises) {
+    const canonical = matchCanonicalLift(ex.name) || ex.prLift;
+    if (!canonical || !ex.weight) continue;
+    if (ex.weight >= (ctx.liftMaxMap.get(`${userId}|${canonical}`) ?? 0)) return canonical;
+  }
+  return null;
+}
+
+function activityRowToPost(ctx: FeedContext, a: any): FeedPost | null {
+  const posterTeams = ctx.teamsForUser[a.user_id];
+  if (!a.started_at || !posterTeams?.length) return null;
+  const pbLift = findPbLift(ctx, a.user_id, a.exercises);
+  const insight = computeActivityInsight(
+    { activity_type: a.activity_type, started_at: a.started_at, duration_seconds: a.duration_seconds, distance_meters: a.distance_meters },
+    ctx.insightHistoryByUser[a.user_id] || [],
+    !!pbLift,
+  );
+  return {
+    kind: 'activity', id: a.id, userId: a.user_id,
+    name: ctx.nameMap[a.user_id] ?? 'Athlete',
+    activityType: a.activity_type,
+    activityName: a.name,
+    durationSeconds: a.duration_seconds,
+    distanceMeters: a.distance_meters,
+    xp: Math.round((a.effort_score || 0) * 10) / 10,
+    ts: a.started_at,
+    notes: a.notes,
+    photoUrl: a.photo_url,
+    pbLift,
+    insight,
+    teamIds: posterTeams,
+    teamNames: posterTeams.map((tid) => ctx.teamNameById[tid] ?? ''),
+  };
+}
+
+function raceRowToPost(ctx: FeedContext, r: any): FeedPost | null {
+  const posterTeams = ctx.teamsForUser[r.user_id];
+  const ts = r.created_at || r.race_date;
+  if (!ts || !posterTeams?.length) return null;
+  return {
+    kind: 'race', id: r.id, userId: r.user_id,
+    name: ctx.nameMap[r.user_id] ?? 'Athlete',
+    raceName: r.name, raceDate: r.race_date, ts,
+    teamIds: posterTeams,
+    teamNames: posterTeams.map((tid) => ctx.teamNameById[tid] ?? ''),
+  };
+}
+
+const byNewestFirst = (a: FeedPost, b: FeedPost) => new Date(b.ts).getTime() - new Date(a.ts).getTime();
+
+// Fetches PAGE_SIZE+1 rows: the extra one is how we know whether a further
+// page exists without a second count query. `cursor` is the started_at of the
+// last row already shown, so paging is stable even if new activities land
+// mid-scroll (an offset would shift and duplicate rows; a cursor won't).
+async function fetchActivityPage(ctx: FeedContext, cursor: string | null) {
+  let q = supabase.from('activities')
+    .select('id, user_id, name, activity_type, started_at, duration_seconds, distance_meters, effort_score, exercises, notes, photo_url')
+    .in('user_id', ctx.memberIds)
+    .order('started_at', { ascending: false })
+    .limit(PAGE_SIZE + 1);
+  if (cursor) q = q.lt('started_at', cursor);
+  const { data } = await q;
+  const rows = data || [];
+  const more = rows.length > PAGE_SIZE;
+  const page = more ? rows.slice(0, PAGE_SIZE) : rows;
+  return { page, more, nextCursor: page.length ? page[page.length - 1].started_at : null };
+}
+
 export default function TeamFeedScreen() {
   const { width } = useWindowDimensions();
   const mobile = width < BREAKPOINT_WIDE_LAYOUT;
@@ -148,6 +239,38 @@ export default function TeamFeedScreen() {
   const [commentsMap, setCommentsMap] = useState<Record<string, Array<{ id: string; user_id: string; body: string; created_at: string }>>>({});
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
   const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
+
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Refs, not state: these are read inside loadMore's async body, where a
+  // stale closure over state would page from the wrong place.
+  const ctxRef = useRef<FeedContext | null>(null);
+  const cursorRef = useRef<string | null>(null);
+
+  // Reactions/comments are fetched per visible page. `replace` distinguishes a
+  // refresh (drop what was there) from appending a page (merge, so the social
+  // state of already-rendered posts survives).
+  const loadSocialFor = useCallback(async (posts: FeedPost[], replace: boolean) => {
+    const ids = posts.map((p) => p.id);
+    if (ids.length === 0) {
+      if (replace) { setReactionsMap({}); setCommentsMap({}); }
+      return;
+    }
+    const [reactionsRes, commentsRes] = await Promise.all([
+      supabase.from('feed_reactions').select('target_type, target_id, user_id, emoji').in('target_id', ids),
+      supabase.from('feed_comments').select('id, target_type, target_id, user_id, body, created_at').in('target_id', ids).order('created_at', { ascending: true }),
+    ]);
+    const newReactions: Record<string, Array<{ user_id: string; emoji: string }>> = {};
+    (reactionsRes.data || []).forEach((r: any) => {
+      (newReactions[feedTargetKey(r.target_type, r.target_id)] ??= []).push({ user_id: r.user_id, emoji: r.emoji });
+    });
+    const newComments: Record<string, Array<{ id: string; user_id: string; body: string; created_at: string }>> = {};
+    (commentsRes.data || []).forEach((c: any) => {
+      (newComments[feedTargetKey(c.target_type, c.target_id)] ??= []).push({ id: c.id, user_id: c.user_id, body: c.body, created_at: c.created_at });
+    });
+    setReactionsMap((prev) => (replace ? newReactions : { ...prev, ...newReactions }));
+    setCommentsMap((prev) => (replace ? newComments : { ...prev, ...newComments }));
+  }, []);
 
   const loadFeed = useCallback(async () => {
     setLoading(true);
@@ -170,6 +293,9 @@ export default function TeamFeedScreen() {
     if (myTeams.length === 0) {
       setTeams(myTeams);
       setItems([]);
+      setHasMore(false);
+      ctxRef.current = null;
+      cursorRef.current = null;
       setLoading(false);
       return;
     }
@@ -205,24 +331,18 @@ export default function TeamFeedScreen() {
     setTeams(myTeams.map((t) => ({ ...t, memberCount: memberCountByTeam[t.id] || 0 })));
     const memberIds = Array.from(memberIdSet);
 
-    const fourteenDaysAgo = new Date();
-    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
     const oneYearAgo = new Date();
     oneYearAgo.setDate(oneYearAgo.getDate() - 365);
     const today = todayLocalStr();
 
-    const [activitiesRes, racesRes, liftEntriesRes, insightHistoryRes] = await Promise.all([
-      supabase.from('activities')
-        .select('id, user_id, name, activity_type, started_at, duration_seconds, distance_meters, effort_score, exercises, notes, photo_url')
-        .in('user_id', memberIds)
-        .gte('started_at', fourteenDaysAgo.toISOString())
-        .order('started_at', { ascending: false })
-        .limit(60),
+    // Context queries — run once per refresh, not per page. Races stay a
+    // first-page-only set: they are UPCOMING events (race_date >= today), a
+    // small forward-looking list rather than a backlog to page through.
+    const [racesRes, liftEntriesRes, insightHistoryRes] = await Promise.all([
       supabase.from('races')
         .select('id, user_id, name, race_date, created_at')
         .in('user_id', memberIds)
         .gte('race_date', today)
-        .gte('created_at', fourteenDaysAgo.toISOString())
         .order('race_date', { ascending: false })
         .limit(20),
       supabase.from('exercise_entries').select('user_id, exercise_name, weight_kg').in('user_id', memberIds),
@@ -242,85 +362,45 @@ export default function TeamFeedScreen() {
       const key = `${e.user_id}|${e.exercise_name}`;
       liftMaxMap.set(key, Math.max(liftMaxMap.get(key) ?? 0, e.weight_kg));
     });
-    function findPbLift(userId: string, exercises: any[] | null): string | null {
-      if (!exercises) return null;
-      for (const ex of exercises) {
-        const canonical = matchCanonicalLift(ex.name) || ex.prLift;
-        if (!canonical || !ex.weight) continue;
-        if (ex.weight >= (liftMaxMap.get(`${userId}|${canonical}`) ?? 0)) return canonical;
-      }
-      return null;
-    }
+
+    const ctx: FeedContext = { memberIds, teamsForUser, teamNameById, nameMap, liftMaxMap, insightHistoryByUser };
+    ctxRef.current = ctx;
+
+    const { page, more, nextCursor } = await fetchActivityPage(ctx, null);
+    cursorRef.current = nextCursor;
+    setHasMore(more);
 
     const built: FeedPost[] = [];
-    (activitiesRes.data || []).forEach((a: any) => {
-      const posterTeams = teamsForUser[a.user_id];
-      if (!a.started_at || !posterTeams?.length) return;
-      const pbLift = findPbLift(a.user_id, a.exercises);
-      const insight = computeActivityInsight(
-        { activity_type: a.activity_type, started_at: a.started_at, duration_seconds: a.duration_seconds, distance_meters: a.distance_meters },
-        insightHistoryByUser[a.user_id] || [],
-        !!pbLift,
-      );
-      built.push({
-        kind: 'activity', id: a.id, userId: a.user_id,
-        name: nameMap[a.user_id] ?? 'Athlete',
-        activityType: a.activity_type,
-        activityName: a.name,
-        durationSeconds: a.duration_seconds,
-        distanceMeters: a.distance_meters,
-        xp: Math.round((a.effort_score || 0) * 10) / 10,
-        ts: a.started_at,
-        notes: a.notes,
-        photoUrl: a.photo_url,
-        pbLift,
-        insight,
-        teamIds: posterTeams,
-        teamNames: posterTeams.map((tid) => teamNameById[tid] ?? ''),
-      });
-    });
-    (racesRes.data || []).forEach((r: any) => {
-      const posterTeams = teamsForUser[r.user_id];
-      const ts = r.created_at || r.race_date;
-      if (!ts || !posterTeams?.length) return;
-      built.push({
-        kind: 'race', id: r.id, userId: r.user_id,
-        name: nameMap[r.user_id] ?? 'Athlete',
-        raceName: r.name, raceDate: r.race_date, ts,
-        teamIds: posterTeams,
-        teamNames: posterTeams.map((tid) => teamNameById[tid] ?? ''),
-      });
-    });
-    built.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
-    const finalItems = built.slice(0, 40);
-    setItems(finalItems);
-
-    const socialIds = finalItems.map((it) => it.id);
-    if (socialIds.length > 0) {
-      const [reactionsRes, commentsRes] = await Promise.all([
-        supabase.from('feed_reactions').select('target_type, target_id, user_id, emoji').in('target_id', socialIds),
-        supabase.from('feed_comments').select('id, target_type, target_id, user_id, body, created_at').in('target_id', socialIds).order('created_at', { ascending: true }),
-      ]);
-      const newReactions: Record<string, Array<{ user_id: string; emoji: string }>> = {};
-      (reactionsRes.data || []).forEach((r: any) => {
-        const key = feedTargetKey(r.target_type, r.target_id);
-        (newReactions[key] ??= []).push({ user_id: r.user_id, emoji: r.emoji });
-      });
-      setReactionsMap(newReactions);
-      const newComments: Record<string, Array<{ id: string; user_id: string; body: string; created_at: string }>> = {};
-      (commentsRes.data || []).forEach((c: any) => {
-        const key = feedTargetKey(c.target_type, c.target_id);
-        (newComments[key] ??= []).push({ id: c.id, user_id: c.user_id, body: c.body, created_at: c.created_at });
-      });
-      setCommentsMap(newComments);
-    } else {
-      setReactionsMap({});
-      setCommentsMap({});
-    }
-
+    page.forEach((a: any) => { const p = activityRowToPost(ctx, a); if (p) built.push(p); });
+    (racesRes.data || []).forEach((r: any) => { const p = raceRowToPost(ctx, r); if (p) built.push(p); });
+    built.sort(byNewestFirst);
+    setItems(built);
+    await loadSocialFor(built, true);
 
     setLoading(false);
-  }, []);
+  }, [loadSocialFor]);
+
+  // Appends the next page. Guarded on loadingMore/hasMore so the scroll
+  // handler firing repeatedly near the bottom can't stack duplicate fetches.
+  const loadMore = useCallback(async () => {
+    const ctx = ctxRef.current;
+    if (!ctx || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const { page, more, nextCursor } = await fetchActivityPage(ctx, cursorRef.current);
+    cursorRef.current = nextCursor;
+    setHasMore(more);
+
+    const newPosts: FeedPost[] = [];
+    page.forEach((a: any) => { const p = activityRowToPost(ctx, a); if (p) newPosts.push(p); });
+    setItems((prev) => {
+      const seen = new Set(prev.map((p) => `${p.kind}-${p.id}`));
+      const merged = [...prev, ...newPosts.filter((p) => !seen.has(`${p.kind}-${p.id}`))];
+      merged.sort(byNewestFirst);
+      return merged;
+    });
+    await loadSocialFor(newPosts, false);
+    setLoadingMore(false);
+  }, [hasMore, loadingMore, loadSocialFor]);
 
   useFocusEffect(useCallback(() => { loadFeed(); }, [loadFeed]));
 
@@ -388,6 +468,16 @@ export default function TeamFeedScreen() {
         <ScrollView
           contentContainerStyle={[styles.content, mobile && styles.contentMobile]}
           style={Platform.OS === 'web' ? ({ WebkitOverflowScrolling: 'touch' } as any) : undefined}
+          // Infinite scroll. Fires while still ~600px short of the end so the
+          // next page is usually already in place by the time you reach it,
+          // rather than bottoming out onto a spinner. loadMore self-guards
+          // against the repeat calls this necessarily produces.
+          scrollEventThrottle={16}
+          onScroll={({ nativeEvent }) => {
+            const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+            const fromEnd = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+            if (fromEnd < 600) loadMore();
+          }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadFeed(); setRefreshing(false); }} tintColor={RivalColors.accentText} colors={[RivalColors.accentFill]} />}
         >
           <HeroPhoto style={styles.hero}>
@@ -470,6 +560,8 @@ export default function TeamFeedScreen() {
                   onDeleted={() => setItems((prev) => prev.filter((it) => it.id !== post.id))}
                 />
               ))}
+              {loadingMore && <Text style={styles.stateText}>Loading more…</Text>}
+              {!hasMore && !loadingMore && <Text style={styles.stateText}>You're all caught up.</Text>}
             </View>
           )}
           </View>
