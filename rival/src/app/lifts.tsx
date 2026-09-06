@@ -5,7 +5,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { CANONICAL_LIFTS, matchCanonicalLift } from './scan-workout';
-import { RivalIcon, RivalTopNav, RivalFixedBackground } from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalFixedBackground, RivalBackButton} from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RivalSerifFamily } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
@@ -190,9 +190,7 @@ export default function LiftsScreen() {
         <RivalTopNav active="activity" />
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.headerRow}>
-            <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))}>
-              <Text style={styles.back}>← Back</Text>
-            </TouchableOpacity>
+            <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))} color={RivalColors.accentFill} />
             <Text style={styles.headerTitle}>Personal Bests</Text>
             <View style={{ width: 48 }} />
           </View>

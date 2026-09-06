@@ -2,12 +2,151 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { resolveCanonicalActivityId, linkNewActivitySource } from '../_shared/activityDedup.ts'
 import { findMatchingRaceId } from '../_shared/raceMatch.ts'
-import { calculateEffortScore, loadMultipliers } from '../_shared/effortScore.ts'
+import { calculateEffortScore, loadScoringConfig } from '../_shared/effortScore.ts'
+import { normaliseActivityType } from '../_shared/activityType.ts'
 import { getFreshStravaToken } from '../_shared/stravaAuth.ts'
+import { sendPushMessages } from '../_shared/push.ts'
+import { formatDisplayName } from '../_shared/formatName.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+// A teammate logging something is the nudge that gets other people moving —
+// but a team of eight all training daily would carpet-bomb everyone's lock
+// screen and get RIVAL muted inside a week. One teammate-activity push per
+// person per this window, no matter how many teammates trained.
+const TEAMMATE_PUSH_COOLDOWN_HOURS = 4
+
+// Fires after a Strava activity lands via webhook — the whole point of the
+// webhook path is that it reaches people who haven't opened the app, so the
+// activity being saved silently would waste it.
+//
+// Deliberately wrapped by its caller in try/catch: Strava disables a
+// subscription that keeps returning non-2xx, so a push failure must never
+// cost us the webhook itself. The activity is already saved by this point.
+async function notifyActivityLanded(
+  // deno-lint-ignore no-explicit-any
+  supabase: any,
+  userId: string,
+  activityName: string,
+  effortScore: number,
+  startedAt: string | null,
+) {
+  const effort = Math.round(effortScore)
+
+  // --- 1. The athlete's own confirmation -----------------------------------
+  // Strava already told them the activity exists; what it can't tell them is
+  // what it was worth here, which is the number RIVAL actually competes on.
+  const { data: ownToken } = await supabase
+    .from('push_tokens')
+    .select('token')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  const messages: { to: string; title: string; body: string; data: Record<string, unknown>; sound: string }[] = []
+
+  if (ownToken?.token) {
+    messages.push({
+      to: ownToken.token,
+      title: `+${effort} Effort`,
+      body: `${activityName} is in — straight from Strava.`,
+      data: { screen: 'home' },
+      sound: 'default',
+    })
+  }
+
+  // --- 2. Their teammates ---------------------------------------------------
+  // Only for something that actually just happened. Strava fires `create` for
+  // backdated uploads too, and telling a team "Sandy just trained" about a
+  // session from three weeks ago is both wrong and the kind of thing that
+  // teaches people to ignore the notification.
+  const activityAgeHours = startedAt
+    ? (Date.now() - new Date(startedAt).getTime()) / (1000 * 60 * 60)
+    : Number.POSITIVE_INFINITY
+  const isRecent = activityAgeHours <= 24
+
+  const { data: myLeagues } = await supabase
+    .from('league_members')
+    .select('league_id')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+
+  const leagueIds = (myLeagues ?? []).map((m: { league_id: string }) => m.league_id)
+  if (isRecent && leagueIds.length > 0) {
+    const { data: teammates } = await supabase
+      .from('league_members')
+      .select('user_id')
+      .in('league_id', leagueIds)
+      .eq('status', 'active')
+      .neq('user_id', userId)
+
+    // Someone sharing two teams with the athlete is still one person — dedupe
+    // before we start counting pushes against them.
+    const teammateIds = [...new Set((teammates ?? []).map((m: { user_id: string }) => m.user_id))] as string[]
+
+    if (teammateIds.length > 0) {
+      const cutoff = new Date(Date.now() - TEAMMATE_PUSH_COOLDOWN_HOURS * 60 * 60 * 1000).toISOString()
+      const { data: recent } = await supabase
+        .from('notifications')
+        .select('user_id')
+        .eq('type', 'teammate_activity')
+        .in('user_id', teammateIds)
+        .gt('sent_at', cutoff)
+      const onCooldown = new Set((recent ?? []).map((n: { user_id: string }) => n.user_id))
+
+      const eligibleIds = teammateIds.filter((id) => !onCooldown.has(id))
+
+      if (eligibleIds.length > 0) {
+        const { data: athlete } = await supabase
+          .from('users')
+          .select('display_name, email')
+          .eq('id', userId)
+          .maybeSingle()
+        // First name only — a lock screen is not the place for "Ricky
+        // Jackson-Lewis just trained". Splitting the FALLBACK would leave the
+        // bare article ("A just trained"), so only trim a real name.
+        const fullName = formatDisplayName(athlete, '')
+        const firstName = fullName ? fullName.split(' ')[0] : 'A teammate'
+
+        const { data: tokens } = await supabase
+          .from('push_tokens')
+          .select('user_id, token')
+          .in('user_id', eligibleIds)
+
+        const notified: string[] = []
+        for (const t of tokens ?? []) {
+          if (!t.token) continue
+          messages.push({
+            to: t.token,
+            title: `${firstName} just trained`,
+            body: `${activityName} — ${effort} Effort`,
+            data: { screen: 'team-feed' },
+            sound: 'default',
+          })
+          notified.push(t.user_id)
+        }
+
+        // Log against the people we actually pushed to, so the cooldown is
+        // measured from a real notification rather than from every teammate
+        // activity that happened to pass through here.
+        // Deduped: someone with two devices gets two pushes but is still one
+        // person as far as the cooldown is concerned.
+        const notifiedOnce = [...new Set(notified)]
+        if (notifiedOnce.length > 0) {
+          await supabase.from('notifications').insert(
+            notifiedOnce.map((id) => ({ user_id: id, type: 'teammate_activity', sent_at: new Date().toISOString() })),
+          )
+        }
+      }
+    }
+  }
+
+  if (messages.length > 0) {
+    const { sent, errors } = await sendPushMessages(messages)
+    console.log(`Activity push: sent ${sent}, errors ${errors.length}`)
+  }
 }
 
 serve(async (req) => {
@@ -87,7 +226,7 @@ serve(async (req) => {
     }
     const accessToken = tokenResult.token
 
-    const multipliers = await loadMultipliers(supabase)
+    const scoringConfig = await loadScoringConfig(supabase)
 
     // Fetch activity details from Strava
     const activityRes = await fetch(
@@ -97,7 +236,14 @@ serve(async (req) => {
     const activity = await activityRes.json()
     console.log('Activity type:', activity.type, 'Duration:', activity.moving_time)
 
-    const effortScore = calculateEffortScore(activity.type, activity.moving_time, activity.distance, multipliers)
+    // Strava spells it "Crossfit"; RIVAL stores "CrossFit". Without this the
+    // same sport gets two scoring_config rows and two tuning knobs.
+    // sport_type, not type: the legacy `type` field collapses the granular
+    // sports (Strava's own docs show type:"Ride" alongside
+    // sport_type:"MountainBikeRide"), so reading `type` made the TrailRun /
+    // MountainBikeRide / GravelRide / VirtualRow config rows unreachable.
+    const canonicalType = normaliseActivityType(activity.sport_type ?? activity.type)
+    const effortScore = calculateEffortScore(canonicalType, activity.moving_time, activity.total_elevation_gain, scoringConfig)
     console.log('Effort score:', effortScore)
 
     // Resolves same-source re-syncs AND cross-source duplicates (e.g. a Garmin watch
@@ -116,7 +262,7 @@ serve(async (req) => {
       userId: connection.user_id,
       provider: 'strava',
       providerActivityId: stravaActivityId,
-      activityType: activity.type,
+      activityType: canonicalType,
       startedAt: activity.start_date,
       durationSeconds: activity.moving_time,
       distanceMeters: activity.distance,
@@ -124,7 +270,7 @@ serve(async (req) => {
     })
 
     const fields = {
-      activity_type: activity.type,
+      activity_type: canonicalType,
       distance_meters: activity.distance,
       duration_seconds: activity.moving_time,
       elevation_meters: activity.total_elevation_gain,
@@ -160,6 +306,21 @@ serve(async (req) => {
       } else {
         if (inserted) await linkNewActivitySource(supabase, connection.user_id, inserted.id, 'strava', stravaActivityId, sourceProvenance)
         console.log('Activity saved successfully with effort score:', effortScore)
+
+        // Only a genuine first-time insert is news. The update branch above
+        // covers re-syncs and edits of activities everyone already heard
+        // about, and `create` events for something already logged manually
+        // resolve to a canonical row and land there too.
+        if (event.aspect_type === 'create') {
+          try {
+            await notifyActivityLanded(supabase, connection.user_id, activity.name || 'A session', effortScore, activity.start_date ?? null)
+          } catch (pushErr) {
+            // Never let this reach the response — Strava disables a
+            // subscription that stops returning 2xx, which would kill every
+            // future sync over a notification that failed to send.
+            console.log('Activity push failed (activity itself saved):', String(pushErr))
+          }
+        }
       }
     }
 

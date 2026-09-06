@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react';
 import { StyleSheet, View, Text, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { runFullStravaImport } from '../lib/strava';
+import { StravaImportReveal } from '../components/rival';
 
 export default function StravaCallbackScreen() {
   const [status, setStatus] = useState('Connecting to Strava...');
+  // Reveal state — set once the import genuinely finishes (not on a partial/
+  // error outcome, where the plain status text stays the honest message).
+  const [reveal, setReveal] = useState<{ seconds: number; effort: number; activities: number } | null>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -53,23 +58,25 @@ export default function StravaCallbackScreen() {
 
       // Pull the user's entire Strava history, not just recent activities, so
       // connecting doesn't feel like starting their Effort/Time Earned from
-      // zero. Must be awaited — closing this tab kills the in-flight request
-      // to the edge function before it finishes, truncating the import.
-      try {
-        await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/strava-full-import`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${accessToken}`,
-            'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
-          },
-        });
-        setStatus('Import complete!');
-      } catch {
+      // zero. runFullStravaImport calls the edge function one page at a time
+      // and keeps going while there's more — each call bounded enough to
+      // avoid the server-side resource limit a single giant import used to
+      // hit on a deep account. Must run to completion before this tab closes
+      // — closing early kills whichever fetch is in flight, truncating it.
+      const result = await runFullStravaImport(accessToken, (p) => {
+        setStatus(`Don't close this tab yet — importing your training history. ${p.savedSoFar} activities imported…`);
+      });
+
+      if (!result.ok) {
         setStatus("Strava connected, but the history import didn't finish — you can re-run it anytime from your profile.");
+        setTimeout(() => window.close(), 2500);
+        return;
       }
 
-      setTimeout(() => window.close(), 1500);
+      // No auto-close here — the reveal is the introduction to how Effort
+      // works, and a tab that vanishes on a timer either rushes that or
+      // cuts it off entirely. It closes when the user says it can.
+      setReveal({ seconds: result.importedSeconds, effort: result.importedEffort, activities: result.saved });
 
     } catch (err) {
       console.error('Exchange error:', err);
@@ -82,7 +89,17 @@ export default function StravaCallbackScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
         <Text style={styles.logo}>RIVAL</Text>
-        <Text style={styles.status}>{status}</Text>
+        {reveal ? (
+          <StravaImportReveal
+            seconds={reveal.seconds}
+            effort={reveal.effort}
+            activities={reveal.activities}
+            ctaLabel="Let's Go"
+            onDone={() => window.close()}
+          />
+        ) : (
+          <Text style={styles.status}>{status}</Text>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -97,13 +114,14 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 24,
+    gap: 8,
   },
   logo: {
     fontSize: 32,
     fontWeight: '900',
     color: '#FFFFFF',
     letterSpacing: 6,
+    marginBottom: 24,
   },
   status: {
     fontSize: 16,

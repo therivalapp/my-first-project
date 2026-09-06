@@ -1,34 +1,14 @@
 export type IdentityUser = {
   display_name: string | null;
-  username?: string | null;
-  display_style?: string | null;
   email?: string | null;
 };
 
+// Always the real display name — no username/display-style concept (removed
+// 2026-08-31, was a source of "who is @masterchief" confusion on
+// standings/leaderboards; everyone shows their real name everywhere now).
 export function formatDisplayName(u: IdentityUser | null | undefined, fallback = 'Athlete'): string {
   if (!u) return fallback;
-  const realName = u.display_name || (u.email ? u.email.split('@')[0] : '') || fallback;
-  const style = u.display_style || 'real_name_username';
-
-  if (style === 'username_only' && u.username) return `@${u.username}`;
-
-  if (style === 'first_last_initial' && u.display_name) {
-    const parts = u.display_name.trim().split(/\s+/);
-    return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}.` : parts[0];
-  }
-
-  return realName;
-}
-
-// Secondary line shown under the primary name — only for the default style.
-export function formatUsernameSuffix(u: IdentityUser | null | undefined): string | null {
-  if (!u) return null;
-  const style = u.display_style || 'real_name_username';
-  return style === 'real_name_username' && u.username ? `@${u.username}` : null;
-}
-
-export function isValidUsername(username: string): boolean {
-  return /^[a-z0-9_]{3,20}$/.test(username);
+  return u.display_name || (u.email ? u.email.split('@')[0] : '') || fallback;
 }
 
 // Team names are free-typed by whoever created the team, so display them
@@ -36,6 +16,15 @@ export function isValidUsername(username: string): boolean {
 // ("squampton crreew" -> "Squampton Crreew"). Never store this — only the
 // display layer title-cases, the DB keeps exactly what was typed.
 export function formatTeamName(name: string | null | undefined): string {
+  if (!name) return '';
+  return name.replace(/\S+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1));
+}
+
+// Only uppercases each word's first letter — never lowercases the rest — so
+// deliberate casing entered by the user (e.g. "NYC Marathon", "5K Trail Run")
+// survives untouched. Same rule as formatTeamName, kept separate since race
+// names and team names are conceptually distinct fields.
+export function formatRaceName(name: string | null | undefined): string {
   if (!name) return '';
   return name.replace(/\S+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1));
 }

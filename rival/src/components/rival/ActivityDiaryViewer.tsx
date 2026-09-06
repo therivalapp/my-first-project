@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Image } from 'react-native';
 import { router } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
-import { notify } from '../../lib/notify';
+import { confirmAction, notify } from '../../lib/notify';
 import { formatDurationClock } from '../../lib/format';
 import { RivalColors, RivalRadius, RivalSerifFamily } from '../../constants/rivalTheme';
 import { RivalIcon, activityIconName } from './RivalIcon';
@@ -86,6 +87,7 @@ export function ActivityDiaryViewer({
 }) {
   const [index, setIndex] = useState(startIndex);
   const activity = activities[index];
+  const insets = useSafeAreaInsets();
 
   // Drag-down-to-dismiss, like a native modal sheet — only claimed from the
   // handle bar (not the whole photo/scroll area), so it doesn't fight the
@@ -184,8 +186,8 @@ export function ActivityDiaryViewer({
   // The X still just closes — but with unsaved edits sitting in local state
   // that close would silently drop them, so confirm first rather than
   // requiring Save before you're allowed to leave.
-  function handleClose() {
-    if (dirty && Platform.OS === 'web' && !window.confirm('Discard unsaved changes?')) return;
+  async function handleClose() {
+    if (dirty && !(await confirmAction({ title: 'Discard unsaved changes?', confirmLabel: 'Discard', destructive: true }))) return;
     onClose();
   }
 
@@ -237,24 +239,28 @@ export function ActivityDiaryViewer({
               style={styles.photo}
             />
           ) : (
-            <View style={styles.photoFallback}>
-              <RivalIcon name={activityIconName(activity.activity_type)} size={64} color={RivalColors.accentText} />
-            </View>
+            <TouchableOpacity
+              style={styles.photoFallback}
+              activeOpacity={0.85}
+              disabled={!onUploadPhoto}
+              onPress={() => onUploadPhoto?.(activity.id)}
+            >
+              <View style={styles.addPhotoCircle}>
+                <RivalIcon name="addPhoto" size={26} color={RivalColors.accentText} />
+              </View>
+              <Text style={styles.addPhotoLabel}>Add Photo</Text>
+              <Text style={styles.addPhotoSub}>Activities with photos get seen and remembered</Text>
+            </TouchableOpacity>
           )}
 
           {/* Top scrim + header — date left, pin/counter/close right. */}
-          <View style={[styles.headerScrim, scrimStyle('toTop')]} pointerEvents="none" />
-          <View style={styles.header}>
+          <View style={[styles.headerScrim, { height: 90 + insets.top }, scrimStyle('toTop')]} pointerEvents="none" />
+          <View style={[styles.header, { top: insets.top + 12 }]}>
             <View>
               <Text style={styles.headerDate}>{formatViewerDate(activity.started_at)}</Text>
               {dirty && <Text style={styles.saveStatusText}>Unsaved changes</Text>}
             </View>
             <View style={styles.headerRight}>
-              {onUploadPhoto && (
-                <TouchableOpacity style={styles.pinCorner} onPress={() => onUploadPhoto(activity.id)}>
-                  <RivalIcon name="camera" size={14} color={RivalColors.accentText} />
-                </TouchableOpacity>
-              )}
               <TouchableOpacity style={styles.pinCorner} onPress={() => router.push(`/manual-entry?editId=${activity.id}`)}>
                 <RivalIcon name="edit" size={14} color={RivalColors.accentText} />
               </TouchableOpacity>
@@ -319,7 +325,7 @@ export function ActivityDiaryViewer({
               style={styles.companionsInput}
               value={companions}
               onChangeText={(v) => edit('companions', v)}
-              placeholder="Add friends"
+              placeholder="Who did you train with?"
               placeholderTextColor="rgba(255,255,255,0.45)"
             />
           </View>
@@ -374,7 +380,10 @@ const styles = StyleSheet.create({
 
   photoArea: { height: '70%' as any, minHeight: 400, position: 'relative', overflow: 'hidden', backgroundColor: '#211c19' },
   photo: { width: '100%', height: '100%' },
-  photoFallback: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', backgroundColor: '#2d241f' },
+  photoFallback: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center', backgroundColor: '#2d241f', gap: 4 },
+  addPhotoCircle: { width: 56, height: 56, borderRadius: 28, borderWidth: 1.5, borderColor: RivalColors.accentText, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  addPhotoLabel: { fontSize: 15, fontWeight: '700', color: RivalColors.accentText },
+  addPhotoSub: { fontSize: 12, fontWeight: '500', color: 'rgba(255,255,255,0.5)', marginTop: 2, maxWidth: 220, textAlign: 'center' },
 
   headerScrim: { position: 'absolute', top: 0, left: 0, right: 0, height: 90 },
   // zIndex above `tapArea` below — tapArea renders after this in JSX and

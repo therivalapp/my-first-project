@@ -47,7 +47,7 @@ export function RivalButton({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color={variant === 'primary' ? RivalColors.onAccentFill : RivalColors.textPrimary} />
+        <ActivityIndicator color={variant === 'primary' ? RivalColors.accentText : RivalColors.textPrimary} />
       ) : (
         <Text
           style={[
@@ -74,7 +74,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primary: { backgroundColor: RivalColors.accentFill },
+  // No fill (Ricky's call — the solid/gradient block read too heavy against
+  // the app's near-black backgrounds) — an outlined "ghost" button instead,
+  // same accent color carried by the border and label rather than a block.
+  primary: {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: RivalColors.accentFill,
+  },
   secondary: {
     backgroundColor: 'transparent',
     borderWidth: 1,
@@ -85,7 +92,7 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.85 },
   label: { ...RivalType.titleMd, fontSize: 16, fontWeight: '600' },
-  labelPrimary: { color: RivalColors.onAccentFill },
+  labelPrimary: { color: RivalColors.accentText },
   labelSecondary: { color: RivalColors.textPrimary },
   labelDestructive: { color: RivalColors.error },
   labelText: { color: RivalColors.accentText },

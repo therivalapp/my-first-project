@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { ACHIEVEMENTS, CATEGORY_LABELS, checkAchievements } from '../lib/achievements';
 import { calculateStreak } from '../lib/streak';
-import { RivalTopNav, RivalPageHeader } from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
 
 export default function AchievementsScreen() {
   const [earnedIds, setEarnedIds] = useState<Set<string>>(new Set());
@@ -64,9 +64,7 @@ export default function AchievementsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
         </View>
 
         <RivalPageHeader title="Achievements" subtitle={`${earnedCount} of ${ACHIEVEMENTS.length} unlocked`} />
@@ -126,7 +124,7 @@ export default function AchievementsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: RivalColors.surfaceLow },
   content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 48 },
-  header: { marginBottom: 24 },
+  header: { marginBottom: 0 },
   back: { color: RivalColors.accentFill, fontSize: 16 },
   title: { fontSize: 32, fontWeight: '900', color: RivalColors.textPrimary, marginBottom: 4 },
   subtitle: { fontSize: 14, color: RivalColors.textSecondary, marginBottom: 24 },

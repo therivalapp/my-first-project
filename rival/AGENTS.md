@@ -9,14 +9,23 @@ RIVAL is a social fitness app: friends form **Teams**, log workouts (manual entr
 - `src/app/*.tsx` — one file per screen, Expo Router file-based routes. `league.tsx` is the Team hub (feed/chat/sessions/challenges/standings).
 - `src/lib/` — shared logic: `xp.ts` (level math), `streak.ts`, `season.ts`, `identity.ts` (display-name styles), `dateFormat.ts` (DD/MM/YYYY ↔ ISO), `achievements.ts`, `supabase.ts` (client).
 - `supabase/functions/` — Deno edge functions. `_shared/` holds cross-function modules (`activityDedup.ts`, `formatName.ts`).
-- `supabase/*.sql` — schema/RLS migrations as standalone files. **Ricky runs these manually in the Supabase dashboard** — never apply schema changes yourself; write the .sql file, ask him to run it, then verify it applied (see below).
+- `supabase/*.sql` — schema/RLS migrations as standalone files. **Always write the .sql file first and show Ricky what it does** — it's the reviewable artifact. He may then either run it himself in the dashboard, or tell you to apply it (see "Applying migrations" below). Either way, verify it landed afterwards.
 
 ## Commands
 
 - Dev server: use the preview tools / `.claude/launch.json` (`rival-web`, port 8081). Start it proactively at session start.
 - Type check: `npx tsc --noEmit` from `rival/`.
 - Tests: `npm test` from `rival/` (vitest, forced to `TZ=Pacific/Auckland` — the streak suite contains NZ DST regression tests that only bite in that zone). Pure-logic libs (`streak`, `dateFormat`, `effort`, `xp`, `season`) are covered in `src/lib/__tests__/` — run this after touching any of them. The effort tests mirror the server formula in `supabase/functions/_shared/effortScore.ts`; if the formula changes, change BOTH and the test.
-- **Live DB introspection (read-only use)**: `supabase db query "<SQL>" --linked` from `rival/`. Use this to check schema, `pg_policies`, `pg_proc` etc. yourself instead of asking Ricky to paste query output. Do NOT use it for writes — mutations go through human-reviewed `.sql` files.
+- **Live DB introspection**: `supabase db query "<SQL>" --linked` from `rival/`. Use this freely for reads — check schema, `pg_policies`, `pg_proc` etc. yourself instead of asking Ricky to paste query output.
+- **Applying migrations**: writes through `supabase db query` are allowed **only when Ricky approves that specific migration in the session**. Never apply one off your own judgement. When he does approve:
+  1. Show him the `.sql` first — he's approving a reviewed change, not a blank cheque.
+  2. Dry-run it as a `select` and show the projected effect before writing (a row count, a before/after total — something he can sanity-check).
+  3. Snapshot anything you're about to overwrite to the scratchpad, so there's a rollback path.
+  4. Run it in steps (schema, then data), verifying each. Apply a `.sql` file with
+     `supabase db query --linked -f <file>` — passing its contents as a positional
+     argument fails, because a leading `--` comment line parses as a CLI flag.
+  5. Verify the result matches the dry-run prediction, and say so.
+  Approval covers the migration he approved — not the next one.
 - Deploy an edge function: `supabase functions deploy <name> --project-ref dgauxvrvqnkbfvarexok`. The deploy bundler is the real Deno type-check (local `tsc` can't resolve Deno URL imports). Code changes in `supabase/functions/` do nothing until deployed.
 
 ## Database rules (hard-won — do not relearn these in production)

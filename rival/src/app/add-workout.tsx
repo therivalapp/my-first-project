@@ -1,7 +1,7 @@
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, ImageBackground, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav } from '../components/rival';
+import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav, RivalBackButton} from '../components/rival';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
@@ -43,9 +43,7 @@ export default function AddWorkoutScreen() {
         <RivalTopNav />
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()}>
-              <Text style={styles.back}>← Back</Text>
-            </TouchableOpacity>
+            <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
           </View>
 
           {/* Hero */}

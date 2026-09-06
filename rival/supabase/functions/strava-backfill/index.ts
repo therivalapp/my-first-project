@@ -1,8 +1,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { resolveCanonicalActivityId, linkNewActivitySource } from '../_shared/activityDedup.ts'
-import { findMatchingRaceId } from '../_shared/raceMatch.ts'
-import { calculateEffortScore, loadMultipliers } from '../_shared/effortScore.ts'
+import { calculateEffortScore, loadScoringConfig } from '../_shared/effortScore.ts'
+import { normaliseActivityType } from '../_shared/activityType.ts'
 import { getFreshStravaToken } from '../_shared/stravaAuth.ts'
 
 const corsHeaders = {
@@ -78,7 +78,7 @@ serve(async (req) => {
       console.log('Athlete fetch failed:', athleteErr.message)
     }
 
-    const multipliers = await loadMultipliers(supabase)
+    const scoringConfig = await loadScoringConfig(supabase)
 
     // Fetch last 30 activities from Strava
     const activitiesRes = await fetch(
@@ -98,12 +98,39 @@ serve(async (req) => {
     }
     console.log(`Fetched ${activities.length} activities`)
 
+
+    // Every race for this user, fetched ONCE. findMatchingRaceId() (the shared
+    // helper) queries the races table per activity — 30 queries to answer a
+    // question one fetch answers for the whole batch. Same rule as that
+    // helper: exactly one race on the activity's LOCAL calendar date.
+    const { data: userRaces } = await supabase
+      .from('races')
+      .select('id, race_date')
+      .eq('user_id', user.id)
+    const racesByDate = new Map<string, string[]>()
+    for (const r of userRaces ?? []) {
+      const list = racesByDate.get(r.race_date) ?? []
+      list.push(r.id)
+      racesByDate.set(r.race_date, list)
+    }
+    const raceIdForLocalDate = (startedAtLocalIso: string): string | null => {
+      const onThatDay = racesByDate.get((startedAtLocalIso ?? '').slice(0, 10))
+      return onThatDay && onThatDay.length === 1 ? onThatDay[0] : null
+    }
+
     let saved = 0
-    for (const activity of activities) {
-      const effortScore = calculateEffortScore(activity.type, activity.moving_time, activity.distance, multipliers)
+    let inserted = 0
 
-      console.log(`Activity ${activity.id}: name="${activity.name}"`)
-
+    // deno-lint-ignore no-explicit-any
+    async function processActivity(activity: any): Promise<{ wasInsert: boolean } | null> {
+      // Strava spells it "Crossfit"; RIVAL stores "CrossFit". Without this the
+      // same sport gets two scoring_config rows and two tuning knobs.
+      // sport_type, not type: the legacy `type` field collapses the granular
+    // sports (Strava's own docs show type:"Ride" alongside
+    // sport_type:"MountainBikeRide"), so reading `type` made the TrailRun /
+    // MountainBikeRide / GravelRide / VirtualRow config rows unreachable.
+    const canonicalType = normaliseActivityType(activity.sport_type ?? activity.type)
+      const effortScore = calculateEffortScore(canonicalType, activity.moving_time, activity.total_elevation_gain, scoringConfig)
       const providerActivityId = String(activity.id)
       // external_id reveals the ORIGINAL source of a Strava activity (e.g.
       // "garmin_ping_123.fit" from a Garmin watch) — kept on activity_sources so
@@ -120,7 +147,7 @@ serve(async (req) => {
         userId: user.id,
         provider: 'strava',
         providerActivityId,
-        activityType: activity.type,
+        activityType: canonicalType,
         startedAt: activity.start_date,
         durationSeconds: activity.moving_time,
         distanceMeters: activity.distance,
@@ -128,7 +155,7 @@ serve(async (req) => {
       })
 
       const fields: Record<string, unknown> = {
-        activity_type: activity.type,
+        activity_type: canonicalType,
         distance_meters: activity.distance,
         duration_seconds: activity.moving_time,
         elevation_meters: activity.total_elevation_gain,
@@ -138,91 +165,90 @@ serve(async (req) => {
         route_polyline: activity.map?.summary_polyline || null,
         // start_date_local (not start_date) — races.race_date is a bare calendar
         // date, so matching needs the athlete's local day, not the UTC one.
-        race_id: await findMatchingRaceId(supabase, user.id, activity.start_date_local),
+        race_id: raceIdForLocalDate(activity.start_date_local),
       }
 
-      let activityId: string | null = null
+      let activityId: string
+      let wasInsert = false
+      // Whether this row ALREADY has a photo, learned without a dedicated
+      // query: the update path selects it alongside the name check it was
+      // already doing, and a freshly-inserted row can't have one by definition.
+      let existingPhotoUrl: string | null = null
+
       if (canonicalId) {
         // Only touch `name` when Strava itself is the row's origin and it isn't
         // locked — a cross-source match shouldn't let a Strava sync clobber a
         // name set by whichever source created the row.
         const { data: existingRow } = await supabase
           .from('activities')
-          .select('name_locked, provider')
+          .select('name_locked, provider, photo_url')
           .eq('id', canonicalId)
           .maybeSingle()
         const updateFields: Record<string, unknown> = { ...fields }
         if (existingRow?.provider === 'strava' && !existingRow?.name_locked) updateFields.name = activity.name
 
         const { error } = await supabase.from('activities').update(updateFields).eq('id', canonicalId)
-        if (error) console.log(`Update error for ${activity.id}:`, JSON.stringify(error))
-        else activityId = canonicalId
+        if (error) {
+          console.log(`Update error for ${activity.id}:`, JSON.stringify(error))
+          return null
+        }
+        activityId = canonicalId
+        existingPhotoUrl = existingRow?.photo_url ?? null
       } else {
-        const { data: inserted, error } = await supabase
+        const { data: insertedRow, error } = await supabase
           .from('activities')
           .insert({ user_id: user.id, provider: 'strava', provider_activity_id: providerActivityId, name: activity.name, ...fields })
           .select('id')
           .single()
-        if (error) console.log(`Insert error for ${activity.id}:`, JSON.stringify(error))
-        else if (inserted) {
-          await linkNewActivitySource(supabase, user.id, inserted.id, 'strava', providerActivityId, sourceProvenance)
-          activityId = inserted.id
+        if (error || !insertedRow) {
+          console.log(`Insert error for ${activity.id}:`, JSON.stringify(error))
+          return null
         }
+        await linkNewActivitySource(supabase, user.id, insertedRow.id, 'strava', providerActivityId, sourceProvenance)
+        activityId = insertedRow.id
+        wasInsert = true
       }
 
-      if (activityId) {
-        saved++
-
-        // Try to fetch photo for this activity — skip if one already exists
-        // (total_photo_count on the list endpoint is unreliable, so we check the detail endpoint)
+      // Fetch a photo only when this activity doesn't already have one
+      // (total_photo_count on the list endpoint is unreliable, so the photos
+      // endpoint is the source of truth for whether one exists at all).
+      if (!existingPhotoUrl) {
         try {
-          const { data: existing } = await supabase
-            .from('activities')
-            .select('photo_url')
-            .eq('id', activityId)
-            .single()
+          const photosRes = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}/photos?photo_sources=true&size=1900`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          )
+          const photos = await photosRes.json()
 
-          if (!existing?.photo_url) {
-            // Use the dedicated photos endpoint — more reliable than activity detail
-            const photosRes = await fetch(
-              `https://www.strava.com/api/v3/activities/${activity.id}/photos?photo_sources=true&size=1900`,
-              { headers: { Authorization: `Bearer ${accessToken}` } }
-            )
-            const photos = await photosRes.json()
-            console.log(`Photos for ${activity.id}:`, JSON.stringify(photos).substring(0, 300))
+          const cdnUrl: string | null = Array.isArray(photos) && photos.length > 0
+            ? (photos[0].urls?.['1900'] ?? photos[0].urls?.['600'] ?? photos[0].urls?.['100'] ?? null)
+            : null
 
-            const cdnUrl: string | null = Array.isArray(photos) && photos.length > 0
-              ? (photos[0].urls?.['1900'] ?? photos[0].urls?.['600'] ?? photos[0].urls?.['100'] ?? null)
-              : null
+          if (cdnUrl) {
+            // Download from Strava CDN and re-upload to Supabase Storage
+            // (Strava CDN URLs expire — storing in Supabase keeps them permanent)
+            const imgRes = await fetch(cdnUrl)
+            if (imgRes.ok) {
+              const imgBytes = await imgRes.arrayBuffer()
+              const contentType = imgRes.headers.get('content-type') || 'image/jpeg'
+              const ext = contentType.includes('png') ? 'png' : 'jpg'
+              const storagePath = `strava/${user.id}/${activity.id}.${ext}`
 
-            if (cdnUrl) {
-              // Download from Strava CDN and re-upload to Supabase Storage
-              // (Strava CDN URLs expire — storing in Supabase keeps them permanent)
-              const imgRes = await fetch(cdnUrl)
-              if (imgRes.ok) {
-                const imgBytes = await imgRes.arrayBuffer()
-                const contentType = imgRes.headers.get('content-type') || 'image/jpeg'
-                const ext = contentType.includes('png') ? 'png' : 'jpg'
-                const storagePath = `strava/${user.id}/${activity.id}.${ext}`
+              const { error: storageErr } = await supabase.storage
+                .from('activity-photos')
+                .upload(storagePath, imgBytes, { contentType, upsert: true })
 
-                const { error: storageErr } = await supabase.storage
+              if (!storageErr) {
+                const { data: urlData } = supabase.storage
                   .from('activity-photos')
-                  .upload(storagePath, imgBytes, { contentType, upsert: true })
+                  .getPublicUrl(storagePath)
 
-                if (!storageErr) {
-                  const { data: urlData } = supabase.storage
-                    .from('activity-photos')
-                    .getPublicUrl(storagePath)
-
-                  await supabase
-                    .from('activities')
-                    .update({ photo_url: urlData.publicUrl })
-                    .eq('id', activityId)
-
-                  console.log(`Photo saved for activity ${activity.id}`)
-                } else {
-                  console.log(`Storage error for ${activity.id}:`, storageErr.message)
-                }
+                await supabase
+                  .from('activities')
+                  .update({ photo_url: urlData.publicUrl })
+                  .eq('id', activityId)
+              } else {
+                console.log(`Storage error for ${activity.id}:`, storageErr.message)
               }
             }
           }
@@ -230,9 +256,26 @@ serve(async (req) => {
           console.log(`Photo fetch failed for activity ${activity.id}:`, photoErr.message)
         }
       }
+
+      return { wasInsert }
     }
 
-    return new Response(JSON.stringify({ success: true, saved, total: activities.length }), {
+    // Activities were processed strictly one at a time, so a sync's runtime was
+    // the SUM of every activity's DB round-trips AND its photo download/upload.
+    // They're independent, so a handful run concurrently. Held lower than the
+    // full-import's batch size because each activity here can hold a full-size
+    // image in memory while it's being re-uploaded to storage.
+    const CONCURRENCY = 5
+    for (let i = 0; i < activities.length; i += CONCURRENCY) {
+      const results = await Promise.all(activities.slice(i, i + CONCURRENCY).map(processActivity))
+      for (const r of results) {
+        if (!r) continue
+        saved++
+        if (r.wasInsert) inserted++
+      }
+    }
+
+    return new Response(JSON.stringify({ success: true, saved, inserted, total: activities.length }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     })

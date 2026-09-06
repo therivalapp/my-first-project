@@ -1,8 +1,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { resolveCanonicalActivityId, linkNewActivitySource } from '../_shared/activityDedup.ts'
-import { findMatchingRaceId } from '../_shared/raceMatch.ts'
-import { calculateEffortScore, loadMultipliers } from '../_shared/effortScore.ts'
+import { calculateEffortScore, loadScoringConfig } from '../_shared/effortScore.ts'
+import { normaliseActivityType } from '../_shared/activityType.ts'
 import { getFreshStravaToken } from '../_shared/stravaAuth.ts'
 
 const corsHeaders = {
@@ -10,7 +10,16 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const MAX_PAGES = 20 // 200/page → up to 4,000 historical activities per import
+// Sized against the edge function's hard 150s request timeout, which a
+// 200-activity page blew straight through (observed: HTTP 504 IDLE_TIMEOUT).
+// Each activity costs ~4 DB round-trips (dedup lookup, provenance upsert,
+// name check, update/insert) at roughly 150ms each. Processing CONCURRENCY
+// activities at a time makes a page's cost ≈ (PAGE_SIZE / CONCURRENCY) * 4
+// round-trips deep: 75/8 * 4 ≈ 38 ≈ 6s, well inside the ceiling, and ~3x
+// fewer HTTP round-trips from the client than a 25-activity page.
+const PAGE_SIZE = 75
+const CONCURRENCY = 8
+const MAX_PAGE = 54 // hard stop — 54 * 75 ≈ 4,000 historical activities
 const HOUR_MILESTONES = [
   { type: 'hours_100', hours: 100, title: '💯 100 Hours Earned', body: "You've crossed 100 hours of training. That's not a hobby anymore." },
   { type: 'hours_500', hours: 500, title: '⚡ 500 Hours Earned', body: "500 hours. Five hundred. Most people dream it. You did it." },
@@ -18,6 +27,16 @@ const HOUR_MILESTONES = [
   { type: 'hours_5000', hours: 5000, title: '👑 5,000 Hours Earned', body: "5,000 hours. You have earned something most people will never understand." },
 ]
 
+// One PAGE per invocation, not the whole history in one loop. The old
+// version processed every page of a user's Strava history (each activity
+// doing 2-4 sequential DB round-trips) inside a single function call —
+// for an account with real depth that blew straight through the edge
+// function's memory/CPU budget (WORKER_RESOURCE_LIMIT, HTTP 546), killing
+// the import silently partway through with no usable error, which is why
+// "didn't pull my full history" had no visible cause. The client
+// (src/lib/strava.ts's runFullStravaImport) now calls this once per page
+// and keeps calling while `hasMore` is true, accumulating totals itself —
+// bounding each invocation's work regardless of how much history exists.
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
@@ -32,6 +51,19 @@ serve(async (req) => {
     if (!user) {
       return new Response(JSON.stringify({ error: 'Not authenticated' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 401,
+      })
+    }
+
+    let page = 1
+    try {
+      const body = await req.json()
+      if (body?.page && Number.isInteger(body.page) && body.page > 0) page = body.page
+    } catch {
+      // no body / not JSON — default to page 1, same as before this change
+    }
+    if (page > MAX_PAGE) {
+      return new Response(JSON.stringify({ error: `Reached the ${MAX_PAGE * PAGE_SIZE}-activity import cap.` }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400,
       })
     }
 
@@ -56,155 +88,197 @@ serve(async (req) => {
     }
     const accessToken = tokenResult.token
 
-    const multipliers = await loadMultipliers(supabase)
+    const scoringConfig = await loadScoringConfig(supabase)
+
+    // Every race for this user, fetched ONCE — findMatchingRaceId() (the
+    // shared helper the other importers use) hits the races table per
+    // activity, which on a 50-activity page is 50 queries to answer a
+    // question a single fetch answers for the whole page. Same matching
+    // rule as that helper: exactly one race on the activity's LOCAL date.
+    const { data: userRaces } = await supabase
+      .from('races')
+      .select('id, race_date')
+      .eq('user_id', user.id)
+    const racesByDate = new Map<string, string[]>()
+    for (const r of userRaces ?? []) {
+      const list = racesByDate.get(r.race_date) ?? []
+      list.push(r.id)
+      racesByDate.set(r.race_date, list)
+    }
+    const raceIdForLocalDate = (startedAtLocalIso: string): string | null => {
+      const onThatDay = racesByDate.get((startedAtLocalIso ?? '').slice(0, 10))
+      return onThatDay && onThatDay.length === 1 ? onThatDay[0] : null
+    }
+
+    const activitiesRes = await fetch(
+      `https://www.strava.com/api/v3/athlete/activities?per_page=${PAGE_SIZE}&page=${page}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    )
+    if (!activitiesRes.ok) {
+      const rateLimited = activitiesRes.status === 429
+      return new Response(JSON.stringify({
+        error: rateLimited
+          ? "Strava's rate limit kicked in — wait 15 minutes and run the import again to get the rest."
+          : `Strava API error (status ${activitiesRes.status}) on page ${page}`,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502 })
+    }
+    const activities = await activitiesRes.json()
+    if (!Array.isArray(activities)) {
+      return new Response(JSON.stringify({ error: 'Unexpected response from Strava.' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 502,
+      })
+    }
 
     let saved = 0
-    let totalFetched = 0
-    let page = 1
-    let rateLimited = false
-    let fetchError: string | null = null
+    let importedSeconds = 0
+    let importedEffort = 0
 
-    while (page <= MAX_PAGES) {
-      const activitiesRes = await fetch(
-        `https://www.strava.com/api/v3/athlete/activities?per_page=200&page=${page}`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      )
-      if (!activitiesRes.ok) {
-        // Don't silently treat a mid-import failure as "reached the end" —
-        // Strava's API rate limit (shared across the whole app, resets every
-        // 15 min) is the most likely cause if this happens partway through a
-        // large history. Surface it instead of returning a false "success".
-        if (activitiesRes.status === 429) rateLimited = true
-        else fetchError = `Strava API error (status ${activitiesRes.status}) on page ${page}`
-        break
-      }
-      const activities = await activitiesRes.json()
-      if (!Array.isArray(activities) || activities.length === 0) break
+    // deno-lint-ignore no-explicit-any
+    async function processActivity(activity: any): Promise<{ seconds: number; effort: number } | null> {
+      // Strava spells it "Crossfit"; RIVAL stores "CrossFit". Without this the
+      // same sport gets two scoring_config rows and two tuning knobs.
+      // sport_type, not type: the legacy `type` field collapses the granular
+    // sports (Strava's own docs show type:"Ride" alongside
+    // sport_type:"MountainBikeRide"), so reading `type` made the TrailRun /
+    // MountainBikeRide / GravelRide / VirtualRow config rows unreachable.
+    const canonicalType = normaliseActivityType(activity.sport_type ?? activity.type)
+      const effortScore = calculateEffortScore(canonicalType, activity.moving_time, activity.total_elevation_gain, scoringConfig)
+      const providerActivityId = String(activity.id)
 
-      totalFetched += activities.length
-
-      for (const activity of activities) {
-        const effortScore = calculateEffortScore(activity.type, activity.moving_time, activity.distance, multipliers)
-        const providerActivityId = String(activity.id)
-
-        // Resolves same-source re-syncs AND cross-source duplicates (e.g. a Garmin
-        // watch that also auto-exports to Strava) to one canonical activities row —
-        // see supabase/functions/_shared/activityDedup.ts.
-        // external_id reveals the ORIGINAL source of a Strava activity (e.g.
-        // "garmin_ping_123.fit" from a Garmin watch) — kept on activity_sources so
-        // a future direct Garmin/Health integration can match exactly, not fuzzily.
-        // (device_name isn't present on list-endpoint summary activities.)
-        const sourceProvenance = {
-          external_id: activity.external_id ?? null,
-          upload_id: activity.upload_id ?? null,
-        }
-
-        const canonicalId = await resolveCanonicalActivityId(supabase, {
-          userId: user.id,
-          provider: 'strava',
-          providerActivityId,
-          activityType: activity.type,
-          startedAt: activity.start_date,
-          durationSeconds: activity.moving_time,
-          distanceMeters: activity.distance,
-          rawPayload: sourceProvenance,
-        })
-
-        const fields: Record<string, unknown> = {
-          activity_type: activity.type,
-          distance_meters: activity.distance,
-          duration_seconds: activity.moving_time,
-          elevation_meters: activity.total_elevation_gain,
-          route_polyline: activity.map?.summary_polyline || null,
-          started_at: activity.start_date,
-          effort_score: effortScore,
-          raw_effort_score: effortScore,
-          // start_date_local (not start_date) — races.race_date is a bare calendar
-          // date, so matching needs the athlete's local day, not the UTC one.
-          race_id: await findMatchingRaceId(supabase, user.id, activity.start_date_local),
-        }
-
-        if (canonicalId) {
-          // Known row — update in place. Only touch `name` when Strava itself is the
-          // row's origin and it isn't locked; a cross-source fuzzy match shouldn't let
-          // a later Strava sync clobber a name/details set by whichever source created it.
-          const { data: existingRow } = await supabase
-            .from('activities')
-            .select('name_locked, provider')
-            .eq('id', canonicalId)
-            .maybeSingle()
-          if (existingRow?.provider === 'strava' && !existingRow?.name_locked) fields.name = activity.name
-
-          const { error } = await supabase.from('activities').update(fields).eq('id', canonicalId)
-          if (!error) saved++
-        } else {
-          const { data: inserted, error } = await supabase
-            .from('activities')
-            .insert({ user_id: user.id, provider: 'strava', provider_activity_id: providerActivityId, name: activity.name, ...fields })
-            .select('id')
-            .single()
-          if (!error && inserted) {
-            await linkNewActivitySource(supabase, user.id, inserted.id, 'strava', providerActivityId, sourceProvenance)
-            saved++
-          }
-        }
+      // Resolves same-source re-syncs AND cross-source duplicates (e.g. a Garmin
+      // watch that also auto-exports to Strava) to one canonical activities row —
+      // see supabase/functions/_shared/activityDedup.ts.
+      // external_id reveals the ORIGINAL source of a Strava activity (e.g.
+      // "garmin_ping_123.fit" from a Garmin watch) — kept on activity_sources so
+      // a future direct Garmin/Health integration can match exactly, not fuzzily.
+      // (device_name isn't present on list-endpoint summary activities.)
+      const sourceProvenance = {
+        external_id: activity.external_id ?? null,
+        upload_id: activity.upload_id ?? null,
       }
 
-      if (activities.length < 200) break // last page
-      page++
-    }
-
-    // Recompute lifetime totals and check for newly-unlocked milestones
-    const { data: allActivities } = await supabase
-      .from('activities')
-      .select('duration_seconds')
-      .eq('user_id', user.id)
-    const totalHours = (allActivities || []).reduce((s: number, a: any) => s + (a.duration_seconds || 0), 0) / 3600
-
-    const { data: existingMilestones } = await supabase.from('milestones').select('type').eq('user_id', user.id)
-    const achieved = new Set((existingMilestones || []).map((m: any) => m.type))
-    const newMilestones = HOUR_MILESTONES.filter(m => totalHours >= m.hours && !achieved.has(m.type))
-
-    if (newMilestones.length > 0) {
-      await supabase.from('milestones').insert(newMilestones.map(m => ({ user_id: user.id, type: m.type })))
-    }
-
-    // Push notification: import complete summary (+ any milestones unlocked instantly)
-    const { data: tokenRow } = await supabase.from('push_tokens').select('token').eq('user_id', user.id).maybeSingle()
-    if (tokenRow?.token) {
-      const importedHours = Math.round(totalHours)
-      const messages = [{
-        to: tokenRow.token,
-        title: rateLimited ? `📥 Import paused — Strava asked us to slow down` : `📥 Your training history is in`,
-        body: rateLimited
-          ? `Imported ${saved} activities before Strava's rate limit kicked in. Wait 15 minutes and run the import again to get the rest.`
-          : `Imported ${saved} activities from Strava. Your full story — ${importedHours}h and counting — is now part of RIVAL.`,
-        data: { screen: 'profile' },
-        sound: 'default',
-      }]
-      newMilestones.forEach(m => messages.push({
-        to: tokenRow.token, title: m.title, body: m.body, data: { screen: 'profile' }, sound: 'default',
-      }))
-      await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(messages),
+      const canonicalId = await resolveCanonicalActivityId(supabase, {
+        userId: user.id,
+        provider: 'strava',
+        providerActivityId,
+        activityType: canonicalType,
+        startedAt: activity.start_date,
+        durationSeconds: activity.moving_time,
+        distanceMeters: activity.distance,
+        rawPayload: sourceProvenance,
       })
+
+      const fields: Record<string, unknown> = {
+        activity_type: canonicalType,
+        distance_meters: activity.distance,
+        duration_seconds: activity.moving_time,
+        elevation_meters: activity.total_elevation_gain,
+        route_polyline: activity.map?.summary_polyline || null,
+        started_at: activity.start_date,
+        effort_score: effortScore,
+        raw_effort_score: effortScore,
+        // start_date_local (not start_date) — races.race_date is a bare calendar
+        // date, so matching needs the athlete's local day, not the UTC one.
+        race_id: raceIdForLocalDate(activity.start_date_local),
+      }
+
+      if (canonicalId) {
+        // Known row — update in place. Only touch `name` when Strava itself is the
+        // row's origin and it isn't locked; a cross-source fuzzy match shouldn't let
+        // a later Strava sync clobber a name/details set by whichever source created it.
+        const { data: existingRow } = await supabase
+          .from('activities')
+          .select('name_locked, provider')
+          .eq('id', canonicalId)
+          .maybeSingle()
+        if (existingRow?.provider === 'strava' && !existingRow?.name_locked) fields.name = activity.name
+
+        const { error } = await supabase.from('activities').update(fields).eq('id', canonicalId)
+        if (error) return null
+        return { seconds: activity.moving_time || 0, effort: effortScore }
+      }
+
+      const { data: inserted, error } = await supabase
+        .from('activities')
+        .insert({ user_id: user.id, provider: 'strava', provider_activity_id: providerActivityId, name: activity.name, ...fields })
+        .select('id')
+        .single()
+      if (error || !inserted) return null
+      await linkNewActivitySource(supabase, user.id, inserted.id, 'strava', providerActivityId, sourceProvenance)
+      return { seconds: activity.moving_time || 0, effort: effortScore }
+    }
+
+    // Activities were processed strictly one at a time, so the page's runtime
+    // was the SUM of every activity's ~4 sequential DB round-trips. They're
+    // independent of each other, so running a handful concurrently cuts the
+    // wall time by roughly the concurrency factor. Kept modest (not "all at
+    // once") to avoid swamping the connection pool — the point is to shorten
+    // the dependency chain, not to maximise in-flight queries.
+    for (let i = 0; i < activities.length; i += CONCURRENCY) {
+      const results = await Promise.all(activities.slice(i, i + CONCURRENCY).map(processActivity))
+      for (const r of results) {
+        if (!r) continue
+        saved++
+        importedSeconds += r.seconds
+        importedEffort += r.effort
+      }
+    }
+
+    const hasMore = activities.length === PAGE_SIZE && page < MAX_PAGE
+
+    // Milestone/push-notification pass only runs once the caller has reached
+    // the last page — cheap either way, but no reason to spam a push per page.
+    let newMilestoneTypes: string[] = []
+    if (!hasMore) {
+      const { data: allActivities } = await supabase
+        .from('activities')
+        .select('duration_seconds')
+        .eq('user_id', user.id)
+      const totalHours = (allActivities || []).reduce((s: number, a: any) => s + (a.duration_seconds || 0), 0) / 3600
+
+      const { data: existingMilestones } = await supabase.from('milestones').select('type').eq('user_id', user.id)
+      const achieved = new Set((existingMilestones || []).map((m: any) => m.type))
+      const newMilestones = HOUR_MILESTONES.filter(m => totalHours >= m.hours && !achieved.has(m.type))
+      newMilestoneTypes = newMilestones.map(m => m.type)
+
+      if (newMilestones.length > 0) {
+        await supabase.from('milestones').insert(newMilestones.map(m => ({ user_id: user.id, type: m.type })))
+      }
+
+      const { data: tokenRow } = await supabase.from('push_tokens').select('token').eq('user_id', user.id).maybeSingle()
+      if (tokenRow?.token) {
+        const importedHours = Math.round(totalHours)
+        const messages = [{
+          to: tokenRow.token,
+          title: `📥 Your training history is in`,
+          body: `Your full story — ${importedHours}h and counting — is now part of RIVAL.`,
+          data: { screen: 'profile' },
+          sound: 'default',
+        }]
+        newMilestones.forEach(m => messages.push({
+          to: tokenRow.token, title: m.title, body: m.body, data: { screen: 'profile' }, sound: 'default',
+        }))
+        await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(messages),
+        }).catch(() => {})
+      }
     }
 
     return new Response(JSON.stringify({
       saved,
-      totalFetched,
-      pages: page,
-      newMilestones: newMilestones.map(m => m.type),
-      partial: rateLimited || !!fetchError,
-      partialReason: rateLimited
-        ? "Strava's rate limit kicked in partway through — wait 15 minutes and run the import again to get the rest."
-        : fetchError,
+      page,
+      hasMore,
+      importedSeconds,
+      importedEffort: Math.round(importedEffort * 10) / 10,
+      newMilestones: newMilestoneTypes,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200,
     })
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: corsHeaders })
+    return new Response(JSON.stringify({ error: String(err) }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500,
+    })
   }
 })

@@ -79,7 +79,7 @@ serve(async (req) => {
       )
     }
 
-    const { data: sender } = await supabase.from('users').select('display_name, email, username, display_style').eq('id', user.id).maybeSingle()
+    const { data: sender } = await supabase.from('users').select('display_name, email').eq('id', user.id).maybeSingle()
     const senderName = formatDisplayName(sender, 'A teammate')
 
     const { data: tokens } = await supabase.from('push_tokens').select('token').eq('user_id', toUserId)

@@ -5,8 +5,8 @@ import { useWindowDimensions } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { Asset } from 'expo-asset';
 import { supabase } from '../lib/supabase';
-import { notify } from '../lib/notify';
-import { formatDisplayName, formatTeamName } from '../lib/identity';
+import { confirmAction, notify } from '../lib/notify';
+import { formatDisplayName, formatTeamName, formatRaceName } from '../lib/identity';
 import { formatDuration } from '../lib/format';
 import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone } from '../lib/activityInsights';
 import { matchCanonicalLift } from './scan-workout';
@@ -310,7 +310,7 @@ export default function TeamFeedScreen() {
     // as it would if you viewed that activity from either team directly.
     const { data: memberRows } = await supabase
       .from('league_members')
-      .select('league_id, user_id, users(display_name, avatar_url, username, display_style, email)')
+      .select('league_id, user_id, users(display_name, avatar_url)')
       .in('league_id', teamIds)
       .eq('status', 'active');
 
@@ -558,6 +558,7 @@ export default function TeamFeedScreen() {
                   onChangeCommentDraft={(v) => setCommentDrafts((prev) => ({ ...prev, [feedTargetKey(post.kind, post.id)]: v }))}
                   onPostComment={() => postComment(post.kind, post.id, post.teamIds[0])}
                   onDeleted={() => setItems((prev) => prev.filter((it) => it.id !== post.id))}
+                  onPhotoAdded={(id, url) => setItems((prev) => prev.map((it) => (it.id === id ? { ...it, photoUrl: url } : it)))}
                 />
               ))}
               {loadingMore && <Text style={styles.stateText}>Loading more…</Text>}
@@ -573,7 +574,7 @@ export default function TeamFeedScreen() {
 
 function PostCard({
   post, currentUserId, avatarUrl, reactions, comments, nameMap, onReact,
-  isCommentsOpen, onToggleComments, commentDraft, onChangeCommentDraft, onPostComment, onDeleted,
+  isCommentsOpen, onToggleComments, commentDraft, onChangeCommentDraft, onPostComment, onDeleted, onPhotoAdded,
 }: {
   post: FeedPost;
   currentUserId: string;
@@ -588,13 +589,49 @@ function PostCard({
   onChangeCommentDraft: (v: string) => void;
   onPostComment: () => void;
   onDeleted: () => void;
+  onPhotoAdded: (activityId: string, url: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+
+  // Own-post-only, straight to the activity's single cover photo (photo_url) —
+  // the feed just needs a fast way to add the one photo that shows here, not
+  // the full multi-photo gallery my-activities.tsx's diary view manages.
+  function addPhotoFromFeed() {
+    if (Platform.OS !== 'web' || post.kind !== 'activity' || post.userId !== currentUserId || uploadingPhoto) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      setUploadingPhoto(true);
+      const ext = file.name.split('.').pop() || 'jpg';
+      const path = `${currentUserId}/${post.id}-${Date.now()}.${ext}`;
+      const { error: storageErr } = await supabase.storage
+        .from('activity-photos')
+        .upload(path, file, { contentType: file.type, upsert: true });
+      if (storageErr) {
+        setUploadingPhoto(false);
+        if (Platform.OS === 'web') window.alert(`Photo upload failed: ${storageErr.message}`);
+        return;
+      }
+      const { data: urlData } = supabase.storage.from('activity-photos').getPublicUrl(path);
+      const { error: dbErr } = await supabase.from('activities').update({ photo_url: urlData.publicUrl }).eq('id', post.id);
+      setUploadingPhoto(false);
+      if (dbErr) {
+        if (Platform.OS === 'web') window.alert(`Couldn't save photo: ${dbErr.message}`);
+        return;
+      }
+      onPhotoAdded(post.id, urlData.publicUrl);
+    };
+    input.click();
+  }
 
   async function deleteThisActivity() {
     if (post.kind !== 'activity') return;
-    if (Platform.OS === 'web' && !window.confirm("Delete this activity? This can't be undone.")) return;
+    if (!(await confirmAction({ title: 'Delete this activity?', message: "This can't be undone.", confirmLabel: 'Delete', destructive: true }))) return;
     setMenuOpen(false);
     setDeleting(true);
     const { error } = await supabase.from('activities').delete().eq('id', post.id);
@@ -696,13 +733,20 @@ function PostCard({
         <View style={styles.noPhotoPanel}>
           <RivalIcon name="flag" size={28} color="#ff5c5c" />
           <Text style={styles.eventAction}>Signed up for a race</Text>
-          <Text style={styles.eventName}>{post.raceName}</Text>
+          <Text style={styles.eventName}>{formatRaceName(post.raceName)}</Text>
           <Text style={styles.eventDate}>{new Date(post.raceDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</Text>
         </View>
       ) : post.photoUrl ? (
         <View style={[styles.postPhotoWrap, isPb && styles.postPhotoWrapPb]}>
           <Image source={{ uri: post.photoUrl }} style={styles.postPhoto} />
         </View>
+      ) : post.userId === currentUserId ? (
+        <TouchableOpacity style={[styles.noPhotoPanel, styles.addPhotoPanel]} activeOpacity={0.85} onPress={addPhotoFromFeed} disabled={uploadingPhoto}>
+          <View style={styles.addPhotoCircle}>
+            <RivalIcon name="addPhoto" size={22} color={RivalColors.accentText} />
+          </View>
+          <Text style={styles.noPhotoBody}>{uploadingPhoto ? 'Uploading…' : 'Add a photo'}</Text>
+        </TouchableOpacity>
       ) : (
         <View style={styles.noPhotoPanel}>
           <RivalIcon name={activityIconName(post.activityType)} size={28} color={RivalColors.accentText} />
@@ -901,6 +945,8 @@ const styles = StyleSheet.create({
     } as any : {}),
   },
   noPhotoBody: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 13, color: 'rgba(255,255,255,0.75)', textAlign: 'center' },
+  addPhotoPanel: { borderWidth: 1.5, borderColor: 'rgba(255,209,190,0.35)', borderStyle: 'dashed' as any },
+  addPhotoCircle: { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: RivalColors.accentText, alignItems: 'center', justifyContent: 'center' },
   eventAction: { fontSize: 11.5, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase', color: '#ff5c5c' },
   eventName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 18, color: '#fff', marginTop: 2 },
   eventDate: { fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 2 },

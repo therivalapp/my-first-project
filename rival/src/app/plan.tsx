@@ -6,11 +6,11 @@ import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 import { ACTIVITY_ICONS } from '../constants/activityIcons';
-import { RivalTopNav, RivalPageHeader } from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
 
 // Class-based types use sessions (1 session = 45 min) instead of free duration entry
 const SESSION_TYPES = new Set([
-  'WeightTraining', 'CrossFit', 'Hyrox', 'HIIT', 'Workout', 'Yoga',
+  'WeightTraining', 'CrossFit', 'Hyrox', 'HIIT', 'Bootcamp', 'Workout', 'Yoga',
 ]);
 const SESSION_MINUTES = 45;
 
@@ -98,7 +98,7 @@ export default function PlanScreen() {
     if (leagueIds.length > 0) {
       const { data: allMembers } = await supabase
         .from('league_members')
-        .select('league_id, user_id, users(display_name, email, username, display_style)')
+        .select('league_id, user_id, users(display_name)')
         .in('league_id', leagueIds)
         .eq('status', 'active');
 
@@ -207,9 +207,7 @@ export default function PlanScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))} color={RivalColors.accentFill} />
         </View>
 
         <RivalPageHeader title="Plan Your Week" subtitle="See your projected team position." />
@@ -453,7 +451,7 @@ export default function PlanScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: RivalColors.surfaceLow },
   content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 48 },
-  header: { marginBottom: 24 },
+  header: { marginBottom: 0 },
   back: { color: RivalColors.accentFill, fontSize: 16 },
   title: { fontSize: 32, fontWeight: '900', color: RivalColors.textPrimary, marginBottom: 6 },
   subtitle: { fontSize: 14, color: RivalColors.textSecondary, marginBottom: 24, lineHeight: 20 },

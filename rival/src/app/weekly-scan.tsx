@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { RivalColors } from '../constants/rivalTheme';
+import { RivalIcon, RivalBackButton} from '../components/rival';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Image, Platform, ActivityIndicator, TextInput } from 'react-native';
 import { notify } from '../lib/notify';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../lib/supabase';
-import { calculateEffortScore, loadScoringMultipliers } from '../lib/effort';
+import { calculateEffortScore, loadScoringConfig } from '../lib/effort';
 import { findMatchingRaceId } from '../lib/raceMatch';
 import { matchCanonicalLift } from './scan-workout';
 
@@ -52,7 +53,7 @@ function getCurrentWeekDays(): DayState[] {
 
 // Class-based formats are almost always a full ~45-60min session even though the
 // scanned WOD/board only shows the timed portion (e.g. a 15min WOD inside an hour class).
-const CLASS_BASED_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT']);
+const CLASS_BASED_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT', 'Bootcamp']);
 const CLASS_DURATION_FLOOR_SECONDS = 45 * 60;
 
 function applyClassDurationFloor(workoutType: string, durationSeconds: number): number {
@@ -182,8 +183,7 @@ export default function WeeklyScanScreen() {
         const workoutType = workout.workoutType || 'Workout';
         const duration = applyClassDurationFloor(workoutType, workout.duration || 0);
         const distance = workout.distance || 0;
-        const intensity = workout.intensity ?? 50;
-        const effortScore = calculateEffortScore(workoutType, duration, distance * 1000, await loadScoringMultipliers(), intensity);
+        const effortScore = calculateEffortScore(workoutType, duration, workout.elevation || 0, await loadScoringConfig());
 
         const raceId = await findMatchingRaceId(user.id, day.date.toISOString());
 
@@ -373,21 +373,24 @@ export default function WeeklyScanScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {errorMsg && (
-        <TouchableOpacity style={styles.floatingErrorBar} onPress={() => setErrorMsg(null)}>
-          <Text style={styles.floatingErrorText}>⚠️ {errorMsg}</Text>
-        </TouchableOpacity>
-      )}
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))} color={RivalColors.accentFill} />
         </View>
 
         <Text style={styles.title}>Scan Your Week</Text>
         <Text style={styles.subtitle}>Attach a photo to each day you worked out, then scan them all at once</Text>
+
+        {/* Not tied to one specific day/field — a permission or upload
+            failure from any day's photo action lands here, right above the
+            day grid it's about, instead of a bar fixed over the whole
+            screen (which used to sit on top of the header/back button). */}
+        {errorMsg && (
+          <TouchableOpacity style={styles.inlineErrorBar} onPress={() => setErrorMsg(null)}>
+            <Text style={styles.floatingErrorText}>⚠️ {errorMsg}</Text>
+          </TouchableOpacity>
+        )}
 
         {!results ? (
           <>
@@ -519,7 +522,10 @@ const styles = StyleSheet.create({
   title: { fontSize: 32, fontWeight: '900', color: RivalColors.textPrimary, marginBottom: 6 },
   subtitle: { fontSize: 14, color: RivalColors.textSecondary, marginBottom: 24, lineHeight: 20 },
 
-  floatingErrorBar: { position: 'absolute', top: 8, left: 12, right: 12, zIndex: 50, backgroundColor: '#3b0a0a', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#f87171', shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
+  // In normal document flow now, not position:absolute — it used to float
+  // over the header/back button no matter what it was about; now it pushes
+  // the day grid down instead of covering anything.
+  inlineErrorBar: { backgroundColor: '#3b0a0a', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#f87171', marginBottom: 16 },
   floatingErrorText: { color: '#f87171', fontSize: 13, fontWeight: '600' },
 
   daysGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 20 },

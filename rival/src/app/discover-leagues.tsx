@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { RivalTopNav, RivalIcon, RivalFixedBackground } from '../components/rival';
-import { formatTeamName } from '../lib/identity';
+import { formatDisplayName, formatTeamName } from '../lib/identity';
 import type { RivalIconName } from '../components/rival/RivalIcon';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 import { BREAKPOINT_TWO_UP_GRID } from '../constants/breakpoints';
@@ -17,6 +17,9 @@ type TeamRow = {
   name: string;
   logo_url: string | null;
   member_count: number;
+  // Public teams only: sessions logged by the team in the last 7 days. The
+  // single most useful signal for a stranger — is this team alive?
+  sessions_last_7d: number;
   membership: MembershipState;
   // Populated for "my teams" only — a reason to click, not just a headcount.
   heroStat: { icon: 'fire' | 'trophy' | 'run' | 'chat'; text: string } | null;
@@ -29,13 +32,6 @@ type TeamRow = {
   pinned: boolean;
 };
 
-// Always the real name here, ignoring the user's own display-style
-// preference (which may be username-only elsewhere) — a teammate's actual
-// name is what makes this signal feel personal on the Teams grid.
-function realName(u: { display_name?: string | null; email?: string | null } | null | undefined, fallback = 'Someone'): string {
-  if (!u) return fallback;
-  return u.display_name || (u.email ? u.email.split('@')[0] : '') || fallback;
-}
 
 function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd'];
@@ -81,14 +77,24 @@ export default function DiscoverLeaguesScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const [publicRes, membershipRes, activeMembersRes] = await Promise.all([
+    const [publicRes, membershipRes, activeMembersRes, publicCountsRes] = await Promise.all([
       supabase.from('leagues').select('id, name, logo_url').eq('is_private', false).order('name'),
       supabase.from('league_members').select('league_id, status, pinned, leagues(id, name, logo_url, created_at)').eq('user_id', user.id),
       // Active membership rows across every league — doubles as both the
       // public "member count" and, filtered to my teams below, the roster
       // used to compute each team's hero stat.
       supabase.from('league_members').select('league_id, user_id').eq('status', 'active'),
+      // Public-team counts have to come from an RPC: RLS on league_members is
+      // is_league_member(), so counting rows client-side only ever sees teams
+      // you're ALREADY in — every public team you hadn't joined showed "0".
+      supabase.rpc('get_public_team_counts'),
     ]);
+    const publicCounts = new Map<string, { members: number; sessions: number }>(
+      (publicCountsRes.data || []).map((r: any) => [r.league_id, {
+        members: Number(r.member_count ?? 0),
+        sessions: Number(r.sessions_last_7d ?? 0),
+      }])
+    );
 
     const countMap: Record<string, number> = {};
     const membersByLeague: Record<string, string[]> = {};
@@ -150,7 +156,7 @@ export default function DiscoverLeaguesScreen() {
         // Names for the hero-stat "{Name} logged a run" / unread-sender lines
         // — a name is what makes the signal worth noticing, not just a count.
         allMemberIds.length > 0
-          ? supabase.from('users').select('id, display_name, email, username, display_style').in('id', allMemberIds)
+          ? supabase.from('users').select('id, display_name').in('id', allMemberIds)
           : Promise.resolve({ data: [] }),
       ]);
       const recentActivities = activitiesRes.data;
@@ -178,7 +184,7 @@ export default function DiscoverLeaguesScreen() {
         if (!lastRead || new Date(m.created_at) > new Date(lastRead)) {
           unreadByLeague[m.league_id] = (unreadByLeague[m.league_id] || 0) + 1;
           if (!unreadFromByLeague[m.league_id]) {
-            unreadFromByLeague[m.league_id] = realName(profileById.get(m.user_id));
+            unreadFromByLeague[m.league_id] = formatDisplayName(profileById.get(m.user_id), 'Someone');
           }
         }
       });
@@ -216,7 +222,7 @@ export default function DiscoverLeaguesScreen() {
         // this week" is forgettable. Most recent activity this week wins.
         const mostRecent = weekActivities[0];
         if (mostRecent) {
-          const name = realName(profileById.get(mostRecent.user_id));
+          const name = formatDisplayName(profileById.get(mostRecent.user_id), 'Someone');
           const typeLabel = (mostRecent.activity_type || 'a session').replace(/([a-z])([A-Z])/g, '$1 $2');
           heroStatByLeague[teamId] = { icon: 'run', text: `${name} logged ${typeLabel}` };
         } else {
@@ -231,6 +237,7 @@ export default function DiscoverLeaguesScreen() {
         name: formatTeamName(m.leagues.name),
         logo_url: m.leagues.logo_url,
         member_count: countMap[m.leagues.id] || 0,
+        sessions_last_7d: 0,
         membership: 'active' as MembershipState,
         heroStat: heroStatByLeague[m.leagues.id] || null,
         lastActivityAt: lastActivityByLeague[m.leagues.id] || null,
@@ -255,7 +262,8 @@ export default function DiscoverLeaguesScreen() {
           id: l.id,
           name: formatTeamName(l.name),
           logo_url: l.logo_url,
-          member_count: countMap[l.id] || 0,
+          member_count: publicCounts.get(l.id)?.members ?? 0,
+          sessions_last_7d: publicCounts.get(l.id)?.sessions ?? 0,
           membership: membershipMap.get(l.id) || 'none',
           heroStat: null,
           lastActivityAt: null,
@@ -417,7 +425,10 @@ export default function DiscoverLeaguesScreen() {
               <View style={[styles.discoverList, wide && styles.discoverListWide]}>
                 {filteredPublic.map(team => (
                   <View key={team.id} style={[styles.discoverCard, wide && styles.discoverCardHalf]}>
-                    <View style={styles.discoverLeft}>
+                    <TouchableOpacity
+                      style={styles.discoverLeft}
+                      onPress={() => router.push({ pathname: '/team-preview', params: { id: team.id } })}
+                    >
                       {team.logo_url ? (
                         <Image source={{ uri: team.logo_url }} style={styles.discoverLogo} />
                       ) : (
@@ -427,9 +438,16 @@ export default function DiscoverLeaguesScreen() {
                       )}
                       <View style={styles.discoverInfo}>
                         <Text style={styles.discoverName} numberOfLines={1}>{team.name}</Text>
-                        <Text style={styles.discoverMeta}>{memberLabel(team.member_count)}</Text>
+                        {/* Headcount alone can't tell a living team from an
+                            abandoned one — the week's activity can. */}
+                        <Text style={styles.discoverMeta}>
+                          {memberLabel(team.member_count)}
+                          {team.sessions_last_7d > 0
+                            ? ` · ${team.sessions_last_7d} session${team.sessions_last_7d === 1 ? '' : 's'} this week`
+                            : ' · Quiet this week'}
+                        </Text>
                       </View>
-                    </View>
+                    </TouchableOpacity>
                     {team.membership === 'pending' ? (
                       <View style={styles.pendingPill}>
                         <Text style={styles.pendingPillText}>Requested</Text>

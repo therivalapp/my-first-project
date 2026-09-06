@@ -3,10 +3,10 @@ import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../lib/supabase';
-import { displayToIsoDate } from '../lib/dateFormat';
+import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { computeGoalProgress } from '../lib/goalProgress';
-import { notify } from '../lib/notify';
-import { RivalTopNav, RivalIcon, RivalPageHeader } from '../components/rival';
+import { confirmAction, notify } from '../lib/notify';
+import { RivalTopNav, RivalIcon, RivalPageHeader, RivalBackButton, RivalDateField } from '../components/rival';
 import { RivalColors, RivalRadius, RivalSerifFamily } from '../constants/rivalTheme';
 
 type Goal = {
@@ -65,19 +65,6 @@ const ELEVATION_FILTERS = [
 function activityLabel(filter: string | null) {
   if (!filter) return 'All activities';
   return filter;
-}
-
-function getMondayStart(date: Date) {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function getMonthStart(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
 function dateToLocalStr(d: Date): string {
@@ -228,6 +215,11 @@ export default function GoalsScreen() {
   const [customEndDate, setCustomEndDate] = useState('');
   const [activityFilter, setActivityFilter] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Non-null while the modal is editing an existing goal rather than creating
+  // one. Holds the whole row, not just the id, because saving needs the
+  // ORIGINAL period/dates to decide whether the goal's window should be
+  // recomputed — see saveGoal.
+  const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
 
   useFocusEffect(useCallback(() => { load(); }, []));
 
@@ -258,20 +250,30 @@ export default function GoalsScreen() {
     setLoading(false);
   }
 
+  // Week and Month are both rolling windows anchored to the moment the goal
+  // is set (or renewed via "Try again") — NOT the calendar week/month. A
+  // goal started on the 19th runs 19th-25th, not Monday-Sunday; a goal
+  // started mid-month runs a full 28 days from today, not just to the end
+  // of the current calendar month. Ricky's call: goals should always give
+  // you the full period you signed up for, never a partial one because of
+  // where today happens to fall in the calendar.
   function getDateRange(period: 'week' | 'month' | 'custom') {
     const now = new Date();
+    const start = now;
     if (period === 'week') {
-      const start = getMondayStart(now);
       const end = new Date(start);
       end.setDate(start.getDate() + 6);
       return { start, end };
     }
     if (period === 'month') {
-      const start = getMonthStart(now);
-      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      // A fixed 28 days rather than real calendar-month arithmetic — Ricky's
+      // call, so every "Month" goal is the same length no matter which
+      // actual months it happens to cross (was 28-31 days depending on
+      // start date, via setMonth()).
+      const end = new Date(start);
+      end.setDate(start.getDate() + 27);
       return { start, end };
     }
-    const start = now;
     const customIso = customEndDate ? displayToIsoDate(customEndDate) : null;
     const end = customIso
       ? (() => { const [y, m, d] = customIso.split('-').map(Number); return new Date(y, m - 1, d); })()
@@ -279,22 +281,74 @@ export default function GoalsScreen() {
     return { start, end };
   }
 
+  // Opens the same modal the + button does, prefilled. Reusing one form
+  // rather than writing a second edit-only screen keeps the two paths from
+  // drifting apart as goal options get added.
+  function openEdit(goal: Goal) {
+    setEditingGoal(goal);
+    setGoalType(goal.goal_type);
+    setTargetValue(String(goal.target_value));
+    setPeriodType(goal.period_type);
+    setActivityFilter(goal.activity_filter);
+    setCustomEndDate(goal.period_type === 'custom' ? isoToDisplayDate(goal.end_date) : '');
+    setShowAdd(true);
+  }
+
+  function closeForm() {
+    setShowAdd(false);
+    setEditingGoal(null);
+    setTargetValue('');
+    setPeriodType('month');
+    setCustomEndDate('');
+    setGoalType('distance');
+    setActivityFilter(null);
+  }
+
   async function saveGoal() {
     if (!targetValue || parseFloat(targetValue) <= 0) return;
-    if (goals.length >= 3) return;
+    // The 3-goal cap applies to creating a 4th, not to editing one of the 3.
+    if (!editingGoal && goals.length >= 3) return;
     if (periodType === 'custom' && (!customEndDate || !displayToIsoDate(customEndDate))) return;
 
     setSaving(true);
-    const { start, end } = getDateRange(periodType);
 
-    const { error: addErr } = await supabase.from('goals').insert({
-      user_id: userId,
+    const fields = {
       goal_type: goalType,
       target_value: parseFloat(targetValue),
       period_type: periodType,
+      activity_filter: goalType === 'gym_sessions' ? null : activityFilter,
+    };
+
+    if (editingGoal) {
+      // Only recompute the goal's window if the period itself actually
+      // changed. Recomputing unconditionally would silently restart a
+      // half-finished custom goal — or shunt a goal set up mid-month back to
+      // the 1st — just because someone nudged the target number.
+      const periodChanged =
+        periodType !== editingGoal.period_type ||
+        (periodType === 'custom' && displayToIsoDate(customEndDate) !== editingGoal.end_date);
+      const dates = periodChanged
+        ? (() => { const { start, end } = getDateRange(periodType); return { start_date: dateToLocalStr(start), end_date: dateToLocalStr(end) }; })()
+        : { start_date: editingGoal.start_date, end_date: editingGoal.end_date };
+
+      const { error: editErr } = await supabase.from('goals').update({ ...fields, ...dates }).eq('id', editingGoal.id);
+      if (editErr) {
+        notify("Couldn't save those changes", editErr.message);
+        setSaving(false);
+        return;
+      }
+      setSaving(false);
+      closeForm();
+      load();
+      return;
+    }
+
+    const { start, end } = getDateRange(periodType);
+    const { error: addErr } = await supabase.from('goals').insert({
+      user_id: userId,
+      ...fields,
       start_date: dateToLocalStr(start),
       end_date: dateToLocalStr(end),
-      activity_filter: goalType === 'gym_sessions' ? null : activityFilter,
     });
     if (addErr) {
       // Keep the form open with the values still in it rather than closing on
@@ -305,23 +359,21 @@ export default function GoalsScreen() {
     }
 
     setSaving(false);
-    setShowAdd(false);
-    setTargetValue('');
-    setPeriodType('month');
-    setCustomEndDate('');
-    setGoalType('distance');
-    setActivityFilter(null);
+    closeForm();
     load();
   }
 
   async function deleteGoal(id: string) {
-    if (typeof window !== 'undefined' && !window.confirm('Delete this goal?')) return;
+    if (!(await confirmAction({ title: 'Delete this goal?', confirmLabel: 'Delete', destructive: true }))) return;
     const { error } = await supabase.from('goals').delete().eq('id', id);
     if (error) {
       notify("Couldn't delete that goal", error.message);
       return;
     }
     setGoals((prev) => prev.filter((g) => g.id !== id));
+    // Only relevant when called from inside the edit modal (its own onPress
+    // guards this for the removed card-level ✕, which never had a form open).
+    closeForm();
   }
 
   // Exactly one pinned goal at a time — pinning this one unpins whichever
@@ -383,9 +435,7 @@ export default function GoalsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))} color={RivalColors.accentFill} />
         </View>
 
         <RivalPageHeader title="Goals" subtitle="Track what you're working towards." />
@@ -403,8 +453,18 @@ export default function GoalsScreen() {
           const ended = !done && isGoalEnded(goal);
           const encouragement = getEncouragement(goal.progress, goal.target_value, unit, goal.id);
           return (
-            <View
+            // The whole card opens the editor — the goal IS the thing being
+            // edited, so a dedicated pencil was an extra target for something
+            // the card already represents. Delete lives inside that editor now
+            // too (see the modal's own Delete button) rather than as a second
+            // ✕ target sitting right next to the card's own tap zone — the
+            // pin / try-again controls that remain still work fine here: RN's
+            // responder system gives the press to the innermost touchable and
+            // doesn't bubble it up to this card.
+            <TouchableOpacity
               key={goal.id}
+              activeOpacity={0.85}
+              onPress={() => openEdit(goal)}
               style={[
                 styles.goalCard,
                 done && { borderColor: RivalColors.accentGold, borderWidth: 1.5 },
@@ -425,11 +485,6 @@ export default function GoalsScreen() {
                 <View style={styles.goalHeaderActions}>
                   <TouchableOpacity onPress={() => togglePin(goal)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <RivalIcon name="pin" size={18} color={goal.pinned ? RivalColors.accentText : RivalColors.textSecondary} />
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => deleteGoal(goal.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <View style={styles.deleteBtn}>
-                      <Text style={styles.deleteBtnText}>✕</Text>
-                    </View>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -467,12 +522,12 @@ export default function GoalsScreen() {
                   </TouchableOpacity>
                 </View>
               )}
-            </View>
+            </TouchableOpacity>
           );
         })}
 
         {goals.length < 3 && (
-          <TouchableOpacity style={styles.addButton} onPress={() => setShowAdd(true)}>
+          <TouchableOpacity style={styles.addButton} onPress={() => { setEditingGoal(null); setShowAdd(true); }}>
             <Text style={styles.addButtonText}>+ Add Goal</Text>
           </TouchableOpacity>
         )}
@@ -486,7 +541,7 @@ export default function GoalsScreen() {
       <Modal visible={showAdd} transparent animationType="slide">
         <View style={styles.modalOverlay}>
           <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalCard}>
-            <Text style={styles.modalTitle}>New Goal</Text>
+            <Text style={styles.modalTitle}>{editingGoal ? 'Edit Goal' : 'New Goal'}</Text>
 
             <Text style={styles.modalLabel}>Type</Text>
             <View style={styles.segmentRow}>
@@ -549,22 +604,22 @@ export default function GoalsScreen() {
 
             {periodType === 'custom' && (
               <>
-                <Text style={styles.modalLabel}>End date (DD/MM/YYYY)</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  placeholder="31/12/2026"
-                  placeholderTextColor={RivalColors.textSecondary}
-                  value={customEndDate}
-                  onChangeText={setCustomEndDate}
-                  keyboardType="numbers-and-punctuation"
-                />
+                <Text style={styles.modalLabel}>End date</Text>
+                <RivalDateField value={customEndDate} onChangeText={setCustomEndDate} placeholder="31/12/2026" inputStyle={styles.modalInput} />
               </>
+            )}
+
+            {editingGoal && (
+              <TouchableOpacity style={styles.deleteGoalButton} onPress={() => deleteGoal(editingGoal.id)}>
+                <RivalIcon name="delete" size={16} color={RivalColors.error} />
+                <Text style={styles.deleteGoalButtonText}>Delete Goal</Text>
+              </TouchableOpacity>
             )}
 
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={styles.cancelButton}
-                onPress={() => { setShowAdd(false); setTargetValue(''); setActivityFilter(null); }}
+                onPress={closeForm}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
@@ -573,7 +628,7 @@ export default function GoalsScreen() {
                 onPress={saveGoal}
                 disabled={!targetValue || saving}
               >
-                <Text style={styles.saveButtonText}>{saving ? 'Saving…' : 'Save Goal'}</Text>
+                <Text style={styles.saveButtonText}>{saving ? 'Saving…' : editingGoal ? 'Save Changes' : 'Save Goal'}</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -585,8 +640,14 @@ export default function GoalsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: RivalColors.surfaceLow },
-  content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 40 },
-  header: { marginBottom: 24 },
+  // The floating bottom nav (RivalTopNav) is portaled outside this layout
+  // and overlays whatever's at the bottom of the page, so a plain content
+  // paddingBottom leaves it covering the last thing in the scroll rather
+  // than clearing it — Add Goal was sitting right under the pill. Matches
+  // home.tsx's own mobile clearance (contentMobile: paddingBottom 120) for
+  // the same nav.
+  content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 120 },
+  header: { marginBottom: 0 },
   back: { color: RivalColors.accentFill, fontSize: 16 },
   title: { fontSize: 32, fontWeight: '900', color: RivalColors.textPrimary, marginBottom: 4 },
   subtitle: { fontSize: 14, color: RivalColors.textSecondary, marginBottom: 28 },
@@ -617,15 +678,19 @@ const styles = StyleSheet.create({
   typeBadgeText: { fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   goalTitle: { fontSize: 17, fontWeight: '800', color: RivalColors.textPrimary },
   goalPeriod: { fontSize: 12, color: RivalColors.textSecondary, marginTop: 2 },
-  deleteBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: RivalColors.surfaceContainer,
+  // Lives in the edit modal now, not the card — see deleteGoal's call site.
+  deleteGoalButton: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
+    marginTop: 20,
+    paddingVertical: 12,
+    borderRadius: RivalRadius.full,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,180,171,0.4)',
   },
-  deleteBtnText: { color: RivalColors.textSecondary, fontSize: 12, fontWeight: '700' },
+  deleteGoalButtonText: { color: RivalColors.error, fontSize: 14, fontWeight: '700' },
   celebrationBanner: {
     backgroundColor: 'rgba(245,183,89,0.12)',
     borderRadius: 10,

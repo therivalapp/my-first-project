@@ -1,5 +1,5 @@
-// Real Team Hub — exact visual port of design-preview-team-hub-v3.tsx (the
-// mockup Ricky reviewed and signed off on), wired to live Supabase data.
+// Real Team Hub — exact visual port of the "Team Hub v3" mockup Ricky
+// reviewed and signed off on, wired to live Supabase data.
 // This is now the real destination when tapping a team from team-feed.tsx
 // (replaces the old /league entry point for that flow). /league itself is
 // untouched and still reachable directly — its Chat/Sessions/1v1-Challenges
@@ -23,12 +23,13 @@ import { Image, ImageBackground, Platform, ScrollView, StyleSheet, Text, TextInp
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
-import { notify } from '../lib/notify';
+import { confirmAction, notify } from '../lib/notify';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 import { formatDuration } from '../lib/format';
 import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone } from '../lib/activityInsights';
 import { RivalAvatar } from '../components/rival/RivalAvatar';
 import { RivalIcon, RivalIconName, activityIconName } from '../components/rival/RivalIcon';
+import { RivalBackButton } from '../components/rival/RivalBackButton';
 import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
 import { matchCanonicalLift } from './scan-workout';
 
@@ -74,7 +75,7 @@ const STANDINGS_FILTERS: { key: StandingsFilter; icon: RivalIconName }[] = [
 const RUN_TYPES = new Set(['Run', 'VirtualRun', 'TrailRun']);
 const RIDE_TYPES = new Set(['Ride', 'VirtualRide', 'EBikeRide', 'MountainBikeRide']);
 const SWIM_TYPES = new Set(['Swim']);
-const STRENGTH_TYPES = new Set(['WeightTraining', 'CrossFit', 'Hyrox', 'HIIT', 'Workout']);
+const STRENGTH_TYPES = new Set(['WeightTraining', 'CrossFit', 'Hyrox', 'HIIT', 'Bootcamp', 'Workout']);
 function matchesStandingsFilter(activityType: string, filter: StandingsFilter): boolean {
   if (filter === 'all') return true;
   if (filter === 'run') return RUN_TYPES.has(activityType);
@@ -106,7 +107,7 @@ type League = {
   id: string; name: string; created_at: string; logo_url: string | null;
   goal_metric: GoalMetric | null; goal_target: number | null; goal_target_date: string | null;
 };
-type Member = { user_id: string; role: string; users: { display_name: string | null; avatar_url: string | null; username: string | null; display_style: string | null } };
+type Member = { user_id: string; role: string; users: { display_name: string | null; avatar_url: string | null } };
 type ActivityRow = {
   id: string; user_id: string; name: string | null; activity_type: string; started_at: string;
   duration_seconds: number | null; distance_meters: number | null; effort_score: number | null;
@@ -257,7 +258,7 @@ export default function TeamHub() {
 
     const { data: membersData } = await supabase
       .from('league_members')
-      .select('user_id, role, users(display_name, avatar_url, username, display_style)')
+      .select('user_id, role, users(display_name, avatar_url)')
       .eq('league_id', id)
       .eq('status', 'active');
     const memberList = (membersData || []) as unknown as Member[];
@@ -575,6 +576,17 @@ export default function TeamHub() {
   const remaining = hasGoal ? Math.max(0, target - goalProgress) : 0;
   const neededPerDay = hasGoal && daysLeft > 0 ? remaining / daysLeft : remaining;
   const paceDeltaPct = hasPaceData && neededPerDay > 0 ? Math.round(((avgPerDay - neededPerDay) / neededPerDay) * 100) : 0;
+  // Your own slice of goalProgress — same goalValue()/metric math the team
+  // total already uses, just filtered to this account's rows first. A member
+  // who's active elsewhere but hasn't logged anything toward THIS goal yet
+  // gets a plain 0, same as any other stat tile shows for "nothing yet" — no
+  // special copy needed, since this tile only renders inside the hasGoal
+  // branch to begin with (the goalless team already has its own separate
+  // Effort/Distance/Time stat row below, so "no team goal" isn't a state
+  // this tile itself has to handle).
+  const myContribution = hasGoal
+    ? Math.round(goalActivitiesRaw.filter((a) => a.user_id === currentUserId).reduce((sum, a) => sum + goalValue(a, league.goal_metric as GoalMetric), 0) * 10) / 10
+    : 0;
 
   // Standings show even without an active Team Challenge — ranked by Effort
   // over the selected period (this week, or all time since the team was
@@ -606,9 +618,7 @@ export default function TeamHub() {
             <View style={[styles.heroScrim, heroScrimWeb]} />
 
             <View style={styles.header}>
-              <TouchableOpacity style={styles.backBtn} onPress={() => router.push('/team-feed')}>
-                <RivalIcon name="back" size={18} color="#fff" />
-              </TouchableOpacity>
+              <RivalBackButton onPress={() => router.push('/team-feed')} color="#fff" style={styles.backBtn} />
               {isAdmin && (
                 <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push({ pathname: '/league-settings', params: { id } })}>
                   <RivalIcon name="settings" size={18} color="#fff" />
@@ -780,7 +790,7 @@ export default function TeamHub() {
             ) : (
               <View style={styles.heroTextBlockNoGoal}>
                 {isAdmin && (
-                  <TouchableOpacity style={styles.startChallengeBtn} onPress={() => router.push({ pathname: '/league', params: { id } })}>
+                  <TouchableOpacity style={styles.startChallengeBtn} onPress={() => router.push({ pathname: '/create-team-challenge', params: { id } })}>
                     <RivalIcon name="target" size={16} color={RivalColors.accentText} />
                     <Text style={styles.startChallengeBtnText}>Start a Team Challenge</Text>
                   </TouchableOpacity>
@@ -835,9 +845,9 @@ export default function TeamHub() {
                         <Text style={styles.statLbl}>{unit.toUpperCase()} TO GO</Text>
                       </View>
                       <View style={[styles.statCard, warmCardWeb]}>
-                        <RivalIcon name="calendar" size={16} color={RivalColors.accentText} style={styles.statIcon} />
-                        <Text style={styles.statVal}>{daysLeft > 0 ? daysLeft : 0}</Text>
-                        <Text style={styles.statLbl}>DAYS LEFT</Text>
+                        <RivalIcon name="person" size={16} color={RivalColors.accentText} style={styles.statIcon} />
+                        <Text style={styles.statVal}>{myContribution.toLocaleString()}</Text>
+                        <Text style={styles.statLbl}>{unit.toUpperCase()}{'\n'}CONTRIBUTED</Text>
                       </View>
                     </View>
                   </>
@@ -1056,7 +1066,7 @@ function ActivityPostCard({
   const [deleting, setDeleting] = useState(false);
 
   async function deleteThisActivity() {
-    if (Platform.OS === 'web' && !window.confirm("Delete this activity? This can't be undone.")) return;
+    if (!(await confirmAction({ title: 'Delete this activity?', message: "This can't be undone.", confirmLabel: 'Delete', destructive: true }))) return;
     setMenuOpen(false);
     setDeleting(true);
     const { error } = await supabase.from('activities').delete().eq('id', a.id);

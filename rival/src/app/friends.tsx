@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { formatDisplayName, IdentityUser } from '../lib/identity';
-import { RivalTopNav, RivalPageHeader } from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
 
 type UserResult = IdentityUser & {
   id: string;
@@ -61,7 +61,7 @@ export default function FriendsScreen() {
 
     const { data: usersData } = await supabase
       .from('users')
-      .select('id, display_name, email, username, display_style')
+      .select('id, display_name')
       .in('id', ids);
 
     if (!usersData) return;
@@ -110,10 +110,19 @@ export default function FriendsScreen() {
 
     const followingIds = new Set((followData || []).map((f: any) => f.following_id));
 
+    // Name only, deliberately. Matching on email turned this box into an
+    // address-book dump: `.or()` with `email.ilike.%q%` meant typing a
+    // fragment like "@gmail" returned other people's email addresses, ten at
+    // a time, to anyone signed in.
+    //
+    // Single-column .ilike() rather than .or() also removes a second bug --
+    // .or() takes a COMMA-SEPARATED filter string and the query interpolated
+    // raw input into it, so searching "Smith, John" split into a third,
+    // malformed condition.
     const { data } = await supabase
       .from('users')
-      .select('id, display_name, email, username, display_style')
-      .or(`display_name.ilike.%${text}%,email.ilike.%${text}%,username.ilike.%${text}%`)
+      .select('id, display_name')
+      .ilike('display_name', `%${text}%`)
       .neq('id', currentUserId)
       .limit(10);
 
@@ -161,9 +170,7 @@ export default function FriendsScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))} color={RivalColors.accentFill} />
         </View>
 
         <RivalPageHeader title="Friends" subtitle="The people you show up with." />
@@ -172,7 +179,7 @@ export default function FriendsScreen() {
         <View style={styles.searchRow}>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by name or email…"
+            placeholder="Search by name…"
             placeholderTextColor={RivalColors.textSecondary}
             value={query}
             onChangeText={search}
@@ -188,7 +195,6 @@ export default function FriendsScreen() {
               <View key={user.id} style={styles.resultRow}>
                 <View style={styles.resultInfo}>
                   <Text style={styles.resultName}>{getDisplayName(user)}</Text>
-                  <Text style={styles.resultEmail}>{user.email}</Text>
                 </View>
                 <TouchableOpacity
                   style={[styles.followButton, user.isFollowing && styles.followingButton]}
@@ -239,7 +245,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   header: {
-    marginBottom: 24,
+    marginBottom: 0,
   },
   back: {
     color: RivalColors.accentFill,
@@ -292,10 +298,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: RivalColors.textPrimary,
-  },
-  resultEmail: {
-    fontSize: 12,
-    color: RivalColors.textSecondary,
   },
   followButton: {
     backgroundColor: RivalColors.accentFill,

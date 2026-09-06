@@ -4,12 +4,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../lib/supabase';
-import { calculateEffortScore, loadScoringMultipliers } from '../lib/effort';
+import { calculateEffortScore, loadScoringConfig, ScoringConfig } from '../lib/effort';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { findMatchingRaceId } from '../lib/raceMatch';
 import { formatDuration } from '../lib/format';
+import { confirmAction } from '../lib/notify';
 import { CANONICAL_LIFTS, matchCanonicalLift } from './scan-workout';
-import { RivalButton, RivalCard, RivalIcon, activityIconName } from '../components/rival';
+import { RivalButton, RivalCard, RivalIcon, activityIconName, RivalBackButton, RivalDateField } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
@@ -27,12 +28,13 @@ const TYPE_OPTIONS: Array<{ type: string; label: string }> = [
   { type: 'WeightTraining', label: 'Weights' },
   { type: 'CrossFit', label: 'CrossFit' },
   { type: 'Hyrox', label: 'Hyrox' },
+  { type: 'Bootcamp', label: 'Bootcamp' },
   { type: 'HIIT', label: 'HIIT' },
 ];
 
 // Class-based formats are almost always a full ~45-60min session; mirror the
 // scan screen's floor so a 15-min WOD isn't logged as a 15-min session.
-const CLASS_BASED_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT']);
+const CLASS_BASED_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT', 'Bootcamp']);
 const CLASS_DURATION_FLOOR_SECONDS = 45 * 60;
 
 const MAX_PHOTOS = 2;
@@ -59,6 +61,7 @@ export default function ManualEntryScreen() {
   const [workoutName, setWorkoutName] = useState('');
   const [dateStr, setDateStr] = useState(() => (prefillDateIso ? isoToDisplayDate(prefillDateIso) || todayDisplay() : todayDisplay()));
   const [durationMin, setDurationMin] = useState('');
+  const [durationSec, setDurationSec] = useState('');
   const [distanceKm, setDistanceKm] = useState('');
   const [elevationM, setElevationM] = useState('');
   const [notes, setNotes] = useState('');
@@ -69,7 +72,12 @@ export default function ManualEntryScreen() {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Split from one screen-wide errorMsg into three, each rendered next to
+  // the thing it's actually about — Ricky's call after a top-of-screen red
+  // bar covered unrelated content and gave no hint which field was wrong.
+  const [fieldError, setFieldError] = useState<{ field: 'name' | 'date' | 'duration'; message: string } | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [generalError, setGeneralError] = useState<string | null>(null);
   const [savedActivityId, setSavedActivityId] = useState<string | null>(null);
   const [savedHasPhoto, setSavedHasPhoto] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState(isEditMode);
@@ -77,18 +85,25 @@ export default function ManualEntryScreen() {
   // changing only the date field doesn't quietly reset an activity logged at
   // 6am to whatever time you happen to be editing it.
   const [originalStartedAt, setOriginalStartedAt] = useState<Date | null>(null);
+  // Held in state so the "≈ N Effort" hint can be computed synchronously on
+  // every keystroke. Without it the hint fell back to the unknown-type
+  // default and credited no elevation, so it read ~48 where the activity
+  // would actually save as 92 — worse than showing nothing.
+  const [scoringConfig, setScoringConfig] = useState<ScoringConfig | null>(null);
+  useEffect(() => { loadScoringConfig().then(setScoringConfig); }, []);
 
   useEffect(() => {
     if (!editId) return;
     (async () => {
       const { data, error } = await supabase.from('activities').select('*').eq('id', editId).single();
-      if (error || !data) { setErrorMsg('Could not load this activity'); setLoadingEdit(false); return; }
+      if (error || !data) { setGeneralError('Could not load this activity'); setLoadingEdit(false); return; }
       setWorkoutType(data.activity_type || 'Run');
       setWorkoutName(data.name || '');
       const started = new Date(data.started_at);
       setOriginalStartedAt(started);
       setDateStr(isoToDisplayDate(`${started.getFullYear()}-${String(started.getMonth() + 1).padStart(2, '0')}-${String(started.getDate()).padStart(2, '0')}`) || todayDisplay());
-      setDurationMin(data.duration_seconds > 0 ? String(Math.round(data.duration_seconds / 60)) : '');
+      setDurationMin(data.duration_seconds > 0 ? String(Math.floor(data.duration_seconds / 60)) : '');
+      setDurationSec(data.duration_seconds > 0 ? String(data.duration_seconds % 60) : '');
       setDistanceKm(data.distance_meters > 0 ? String(data.distance_meters / 1000) : '');
       setElevationM(data.elevation_meters > 0 ? String(Math.round(data.elevation_meters)) : '');
       setNotes(data.notes || '');
@@ -100,7 +115,8 @@ export default function ManualEntryScreen() {
   // Projected effort so the user gets immediate feedback before saving.
   const durationSeconds = (() => {
     const mins = durationMin.trim() === '' ? 0 : Number(durationMin);
-    const raw = Number.isFinite(mins) ? mins * 60 : 0;
+    const secs = durationSec.trim() === '' ? 0 : Number(durationSec);
+    const raw = (Number.isFinite(mins) ? mins * 60 : 0) + (Number.isFinite(secs) ? secs : 0);
     return CLASS_BASED_TYPES.has(workoutType) && raw > 0 && raw < 30 * 60 ? CLASS_DURATION_FLOOR_SECONDS : raw;
   })();
 
@@ -120,7 +136,7 @@ export default function ManualEntryScreen() {
       input.multiple = true;
       input.onchange = () => {
         const files = Array.from(input.files || []);
-        setErrorMsg(null);
+        setMediaError(null);
         setMedia((prev) => {
           let photoCount = 0, videoCount = 0;
           prev.forEach((m) => (m.type === 'video' ? videoCount++ : photoCount++));
@@ -128,7 +144,7 @@ export default function ManualEntryScreen() {
           for (const file of files) {
             const type: 'photo' | 'video' = file.type.startsWith('video') ? 'video' : 'photo';
             const rejection = checkMediaLimits(type, file.size / (1024 * 1024), photoCount, videoCount);
-            if (rejection) { setErrorMsg(rejection); continue; }
+            if (rejection) { setMediaError(rejection); continue; }
             const uri = URL.createObjectURL(file);
             const ext = file.name.split('.').pop() || (type === 'video' ? 'mp4' : 'jpg');
             accepted.push({ blob: file, uri, type, mimeType: file.type, ext });
@@ -145,10 +161,10 @@ export default function ManualEntryScreen() {
 
   async function pickMediaNative() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) { setErrorMsg('Photo library access is needed to add photos/videos'); return; }
+    if (!permission.granted) { setMediaError('Photo library access is needed to add photos/videos'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], allowsMultipleSelection: true, quality: 0.8 });
     if (result.canceled || !result.assets?.length) return;
-    setErrorMsg(null);
+    setMediaError(null);
     let photoCount = media.filter((m) => m.type === 'photo').length;
     let videoCount = media.filter((m) => m.type === 'video').length;
     const accepted: MediaItem[] = [];
@@ -156,7 +172,7 @@ export default function ManualEntryScreen() {
       const type: 'photo' | 'video' = asset.type === 'video' ? 'video' : 'photo';
       const blob = await (await fetch(asset.uri)).blob();
       const rejection = checkMediaLimits(type, blob.size / (1024 * 1024), photoCount, videoCount);
-      if (rejection) { setErrorMsg(rejection); continue; }
+      if (rejection) { setMediaError(rejection); continue; }
       const mimeType = asset.mimeType || (type === 'video' ? 'video/mp4' : 'image/jpeg');
       const ext = asset.fileName?.split('.').pop() || (type === 'video' ? 'mp4' : 'jpg');
       accepted.push({ blob, uri: asset.uri, type, mimeType, ext });
@@ -211,11 +227,11 @@ export default function ManualEntryScreen() {
   // ON DELETE SET NULL, harmless orphans left behind on a row that's gone).
   async function deleteActivity() {
     if (!editId) return;
-    if (Platform.OS === 'web' && !window.confirm('Delete this activity? This can\'t be undone.')) return;
+    if (!(await confirmAction({ title: 'Delete this activity?', message: "This can't be undone.", confirmLabel: 'Delete', destructive: true }))) return;
     setDeleting(true);
     const { error } = await supabase.from('activities').delete().eq('id', editId);
     if (error) {
-      setErrorMsg(`Delete failed: ${error.message}`);
+      setGeneralError(`Delete failed: ${error.message}`);
       setDeleting(false);
       return;
     }
@@ -223,13 +239,14 @@ export default function ManualEntryScreen() {
   }
 
   async function saveSession() {
-    if (!workoutName.trim()) { setErrorMsg('Give your session a name'); return; }
-    if (durationSeconds <= 0) { setErrorMsg('Add how long you trained (minutes)'); return; }
+    if (!workoutName.trim()) { setFieldError({ field: 'name', message: 'Give your session a name' }); return; }
+    if (durationSeconds <= 0) { setFieldError({ field: 'duration', message: 'Add how long you trained' }); return; }
     const isoDate = displayToIsoDate(dateStr);
-    if (!isoDate) { setErrorMsg('Enter the date as DD/MM/YYYY'); return; }
+    if (!isoDate) { setFieldError({ field: 'date', message: 'Enter a valid date' }); return; }
 
     setSaving(true);
-    setErrorMsg(null);
+    setFieldError(null);
+    setGeneralError(null);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setSaving(false); return; }
@@ -239,9 +256,8 @@ export default function ManualEntryScreen() {
       const effortScore = calculateEffortScore(
         workoutType,
         durationSeconds,
-        distance,
-        await loadScoringMultipliers(),
-        50,
+        elevation,
+        await loadScoringConfig(),
       );
 
       const [y, m, d] = isoDate.split('-').map(Number);
@@ -282,7 +298,7 @@ export default function ManualEntryScreen() {
           })
           .eq('id', editId);
         if (error) {
-          setErrorMsg(`Save failed: ${error.message}`);
+          setGeneralError(`Save failed: ${error.message}`);
           setSaving(false);
           return;
         }
@@ -294,7 +310,7 @@ export default function ManualEntryScreen() {
         // rather than press on.
         const { error: clearErr } = await supabase.from('exercise_entries').delete().eq('activity_id', activityId);
         if (clearErr) {
-          setErrorMsg(`Couldn't update your lifts: ${clearErr.message}`);
+          setGeneralError(`Couldn't update your lifts: ${clearErr.message}`);
           setSaving(false);
           return;
         }
@@ -321,9 +337,11 @@ export default function ManualEntryScreen() {
           .single();
 
         if (error || !inserted) {
-          setErrorMsg(error?.message?.includes('activities_started_at_not_future')
-            ? "That date is in the future — activities can't be logged ahead of time."
-            : `Save failed: ${error?.message ?? 'unknown error'}`);
+          if (error?.message?.includes('activities_started_at_not_future')) {
+            setFieldError({ field: 'date', message: "That's in the future — activities can't be logged ahead of time." });
+          } else {
+            setGeneralError(`Save failed: ${error?.message ?? 'unknown error'}`);
+          }
           setSaving(false);
           return;
         }
@@ -349,7 +367,7 @@ export default function ManualEntryScreen() {
         // The activity itself is already saved, so this is reported rather than
         // fatal -- but silently dropping the lifts would leave the PR tracker
         // quietly wrong.
-        if (liftErr) setErrorMsg(`Workout saved, but the lifts didn't attach: ${liftErr.message}`);
+        if (liftErr) setGeneralError(`Workout saved, but the lifts didn't attach: ${liftErr.message}`);
       }
 
       // Upload media, set the first photo as the activity's cover.
@@ -368,7 +386,7 @@ export default function ManualEntryScreen() {
       }
       if (firstPhotoUrl) {
         const { error: coverErr } = await supabase.from('activities').update({ photo_url: firstPhotoUrl }).eq('id', activityId);
-        if (coverErr) setErrorMsg(`Workout saved, but the cover photo didn't set: ${coverErr.message}`);
+        if (coverErr) setGeneralError(`Workout saved, but the cover photo didn't set: ${coverErr.message}`);
       }
 
       // Milestones are earned off total hours — recheck fire-and-forget.
@@ -388,7 +406,7 @@ export default function ManualEntryScreen() {
       if (!firstPhotoUrl) setTimeout(() => router.replace('/my-activities'), 900);
     } catch (err) {
       console.error('Save failed:', err);
-      setErrorMsg('Failed to save session');
+      setGeneralError('Failed to save session');
     } finally {
       setSaving(false);
     }
@@ -423,20 +441,20 @@ export default function ManualEntryScreen() {
         <TextInput
           style={styles.input}
           value={workoutName}
-          onChangeText={setWorkoutName}
+          onChangeText={(v) => { setWorkoutName(v); if (fieldError?.field === 'name') setFieldError(null); }}
           placeholder="e.g., Morning Tempo Run"
           placeholderTextColor={RivalColors.textSecondary}
         />
+        {fieldError?.field === 'name' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
       </View>
       <View style={styles.field}>
         <Text style={styles.fieldLabel}>DATE</Text>
-        <TextInput
-          style={styles.input}
+        <RivalDateField
           value={dateStr}
-          onChangeText={setDateStr}
-          placeholder="DD/MM/YYYY"
-          placeholderTextColor={RivalColors.textSecondary}
+          onChangeText={(v) => { setDateStr(v); if (fieldError?.field === 'date') setFieldError(null); }}
+          inputStyle={styles.input}
         />
+        {fieldError?.field === 'date' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
       </View>
     </RivalCard>
   );
@@ -459,22 +477,62 @@ export default function ManualEntryScreen() {
     </View>
   );
 
+  // Duration gets its own layout rather than the generic `metric` box — two
+  // narrow fields (min, sec) sharing the space a single number used to have,
+  // so a sub-minute correction doesn't need converting to a decimal.
+  const durationMetric = (
+    <View style={styles.metricBox}>
+      <Text style={styles.metricLabel}>DURATION</Text>
+      <View style={styles.metricInputRow}>
+        <TextInput
+          style={[styles.metricInput, styles.metricInputNarrow]}
+          value={durationMin}
+          onChangeText={(v) => { setDurationMin(v); if (fieldError?.field === 'duration') setFieldError(null); }}
+          placeholder="0"
+          placeholderTextColor={RivalColors.textSecondary}
+          keyboardType="numeric"
+        />
+        <Text style={styles.metricUnit}>min</Text>
+        <TextInput
+          style={[styles.metricInput, styles.metricInputNarrow]}
+          value={durationSec}
+          onChangeText={(v) => {
+            // Clamp to 0-59 as you type rather than after — "75 sec" isn't a
+            // typo to catch on save, it's just 1:15, which belongs in the min
+            // field, so keep sec honest to what it actually represents.
+            const n = v.replace(/\D/g, '').slice(0, 2);
+            const clamped = n === '' ? '' : String(Math.min(59, Number(n)));
+            setDurationSec(clamped);
+            if (fieldError?.field === 'duration') setFieldError(null);
+          }}
+          placeholder="0"
+          placeholderTextColor={RivalColors.textSecondary}
+          keyboardType="numeric"
+          maxLength={2}
+        />
+        <Text style={styles.metricUnit}>sec</Text>
+      </View>
+    </View>
+  );
+
   const metricsCard = (
     <RivalCard glass style={styles.panel}>
       <Text style={styles.panelLabel}>CORE PERFORMANCE METRICS</Text>
       <View style={styles.metricsRow}>
-        {metric('DURATION', 'MIN', durationMin, setDurationMin, '0')}
+        {durationMetric}
         {metric('DISTANCE', 'KM', distanceKm, setDistanceKm, '0.00', 'decimal-pad')}
         {metric('ELEVATION', 'M', elevationM, setElevationM, '0')}
       </View>
+      {fieldError?.field === 'duration' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
       {durationSeconds > 0 && (
         <Text style={styles.effortPreview}>
-          ≈ {Math.round(calculateEffortScorePreview(workoutType, durationSeconds, distanceKm))} Effort · {formatDuration(durationSeconds)}
+          ≈ {Math.round(calculateEffortScorePreview(workoutType, durationSeconds, elevationM, scoringConfig))} Effort · {formatDuration(durationSeconds)}
         </Text>
       )}
       {CLASS_BASED_TYPES.has(workoutType) && durationSeconds >= CLASS_DURATION_FLOOR_SECONDS && durationMin.trim() !== '' && Number(durationMin) * 60 < 30 * 60 && (
         <Text style={styles.classHint}>CrossFit/Hyrox/HIIT sessions are counted as a full class (45 min) — include warm-up & skill work, not just the timed piece.</Text>
       )}
+      {generalError && <Text style={styles.fieldError}>⚠️ {generalError}</Text>}
       <RivalButton
         label={saving ? 'Saving…' : isEditMode ? 'Save Changes' : 'Complete Session'}
         onPress={saveSession}
@@ -603,6 +661,7 @@ export default function ManualEntryScreen() {
         <Text style={styles.dropzoneTitle}>Click to upload</Text>
         <Text style={styles.dropzoneSub}>Up to {MAX_PHOTOS} photos + {MAX_VIDEOS} video · PNG, JPG, MP4</Text>
       </TouchableOpacity>
+      {mediaError && <Text style={styles.fieldError}>⚠️ {mediaError}</Text>}
     </RivalCard>
   );
 
@@ -610,16 +669,9 @@ export default function ManualEntryScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {errorMsg && (
-        <TouchableOpacity style={styles.errorBar} onPress={() => setErrorMsg(null)}>
-          <Text style={styles.errorBarText}>⚠️ {errorMsg}</Text>
-        </TouchableOpacity>
-      )}
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
         </View>
 
         <Text style={styles.title}>{isEditMode ? 'Edit Your Session' : 'Log Your Session'}</Text>
@@ -667,13 +719,19 @@ export default function ManualEntryScreen() {
   );
 }
 
-// Lightweight synchronous projection for the on-screen "≈ N Effort" hint.
-// The real, authoritative score is computed with live multipliers at save time
-// (calculateEffortScore with loadScoringMultipliers); this preview uses the
-// default multiplier of 1 so it can render without an async fetch.
-function calculateEffortScorePreview(type: string, durationSeconds: number, distanceKm: string): number {
-  const distance = distanceKm.trim() === '' ? 0 : Number(distanceKm);
-  return calculateEffortScore(type, durationSeconds, distance, {}, 50);
+// The on-screen "≈ N Effort" hint. Uses the same formula and the same live
+// config as the save path, so what the athlete is shown before saving is what
+// they actually get — until the config has loaded, in which case there is
+// nothing honest to show yet.
+function calculateEffortScorePreview(
+  type: string,
+  durationSeconds: number,
+  elevationM: string,
+  config: ScoringConfig | null,
+): number {
+  if (!config) return 0;
+  const elevation = elevationM.trim() === '' ? 0 : Number(elevationM);
+  return calculateEffortScore(type, durationSeconds, elevation, config);
 }
 
 const styles = StyleSheet.create({
@@ -684,8 +742,10 @@ const styles = StyleSheet.create({
   title: { ...RivalType.headlineLg, color: RivalColors.textPrimary, marginTop: 8 },
   subtitle: { ...RivalType.bodyMd, fontSize: 14, color: RivalColors.textSecondary, marginBottom: 24 },
 
-  errorBar: { backgroundColor: RivalColors.errorContainer, paddingVertical: 12, paddingHorizontal: 20 },
-  errorBarText: { color: RivalColors.error, fontSize: 14, fontWeight: '600', textAlign: 'center' },
+  // Sits directly under (or beside, for the metrics row) whatever it's
+  // actually about — replaces a single fixed top banner that covered the
+  // rest of the screen with no clue which field it referred to.
+  fieldError: { color: RivalColors.error, fontSize: 12, fontWeight: '600' },
 
   successBanner: { backgroundColor: `${RivalColors.success}22`, borderRadius: RivalRadius.lg, padding: 16, marginBottom: 20, gap: 8, alignItems: 'center' },
   successText: { color: RivalColors.success, fontSize: 15, fontWeight: '700' },
@@ -718,6 +778,10 @@ const styles = StyleSheet.create({
   // minWidth:0 lets the input shrink inside the flex row on react-native-web —
   // without it the input keeps its content width and shoves the unit out of the box.
   metricInput: { flex: 1, minWidth: 0, color: RivalColors.textPrimary, fontSize: 26, fontWeight: '300', padding: 0 },
+  // DURATION's min/sec pair share the same box width DISTANCE/ELEVATION give
+  // a single number — smaller font and a tighter unit label keep "0 min 0
+  // sec" from crowding out the box's own padding.
+  metricInputNarrow: { fontSize: 18 },
   metricUnit: { fontSize: 11, color: RivalColors.textSecondary, fontWeight: '700', paddingBottom: 4, flexShrink: 0 },
   effortPreview: { fontSize: 13, color: RivalColors.accentText, fontWeight: '700' },
   classHint: { fontSize: 12, color: RivalColors.textSecondary, lineHeight: 17 },

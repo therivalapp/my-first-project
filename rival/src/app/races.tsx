@@ -3,11 +3,11 @@ import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../lib/supabase';
-import { notify } from '../lib/notify';
-import { formatDisplayName } from '../lib/identity';
+import { confirmAction, notify } from '../lib/notify';
+import { formatDisplayName, formatRaceName } from '../lib/identity';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { formatGoalTimeMask } from '../lib/format';
-import { RivalTopNav, RivalPageHeader, RivalIcon } from '../components/rival';
+import { RivalTopNav, RivalPageHeader, RivalIcon, RivalBackButton, RivalDateField } from '../components/rival';
 import type { RivalIconName } from '../components/rival';
 import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
 
@@ -83,7 +83,7 @@ type Race = {
   disciplines: Discipline[] | null;
   goal_finish_time: string | null;
   actual_finish_time: string | null;
-  users: { display_name: string | null; email: string; username: string | null; display_style: string | null };
+  users: { display_name: string | null; email: string };
   interest_count: number;
   i_am_interested: boolean;
   avg_weekly_km: number;
@@ -242,6 +242,8 @@ export default function RacesScreen() {
       .from('league_members').select('league_id').eq('user_id', user.id).eq('status', 'active');
     const leagueIds = (membershipData || []).map((m: any) => m.league_id);
 
+    // "friendIds" is historical naming — this has always been TEAMMATES,
+    // read straight off league_members. Only the tab label said "Friends".
     let friendIds: string[] = [];
     if (leagueIds.length > 0) {
       const { data: leagueMembersData } = await supabase
@@ -252,10 +254,10 @@ export default function RacesScreen() {
     setLeagueMateIds(friendSet);
 
     const [racesRes, pastRes, interestsRes, activitiesRes] = await Promise.all([
-      supabase.from('races').select('*, users(display_name, email, username, display_style)')
+      supabase.from('races').select('*, users(display_name)')
         .or(`is_public.eq.true,user_id.eq.${user.id}`)
         .gte('race_date', today).order('race_date', { ascending: true }),
-      supabase.from('races').select('*, users(display_name, email, username, display_style)')
+      supabase.from('races').select('*, users(display_name)')
         .eq('user_id', user.id).lt('race_date', today).order('race_date', { ascending: false }),
       supabase.from('race_interests').select('race_id, user_id'),
       supabase.from('activities').select('distance_meters, started_at')
@@ -376,7 +378,7 @@ export default function RacesScreen() {
   }
 
   async function deleteRace(id: string) {
-    if (typeof window !== 'undefined' && !window.confirm('Delete this race?')) return;
+    if (!(await confirmAction({ title: 'Delete this race?', confirmLabel: 'Delete', destructive: true }))) return;
     const { error } = await supabase.from('races').delete().eq('id', id);
     if (error) {
       notify("Couldn't delete that race", error.message);
@@ -410,9 +412,7 @@ export default function RacesScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))} color={RivalColors.accentFill} />
         </View>
 
         <View style={styles.titleRow}>
@@ -441,7 +441,7 @@ export default function RacesScreen() {
             onPress={() => setActiveTab('friends')}
           >
             <Text style={[styles.tabText, activeTab === 'friends' && styles.tabTextActive]}>
-              Friends ({friendRaces.length})
+              Teammates ({friendRaces.length})
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -501,7 +501,7 @@ export default function RacesScreen() {
                 )}
               </View>
 
-              <Text style={styles.raceName}>{race.name}</Text>
+              <Text style={styles.raceName}>{formatRaceName(race.name)}</Text>
 
               <View style={styles.raceDetails}>
                 {race.location ? (
@@ -709,7 +709,7 @@ export default function RacesScreen() {
             )}
 
             <Text style={styles.modalLabel}>Race date (DD/MM/YYYY)</Text>
-            <TextInput style={styles.modalInput} placeholder="18/10/2026" placeholderTextColor={RivalColors.textSecondary} value={raceDate} onChangeText={setRaceDate} keyboardType="numbers-and-punctuation" />
+            <RivalDateField value={raceDate} onChangeText={setRaceDate} placeholder="18/10/2026" inputStyle={styles.modalInput} />
 
             <Text style={styles.modalLabel}>Location (optional)</Text>
             <TextInput style={styles.modalInput} placeholder="Auckland, NZ" placeholderTextColor={RivalColors.textSecondary} value={location} onChangeText={setLocation} />
@@ -805,7 +805,7 @@ export default function RacesScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.finishModalCard}>
             <Text style={styles.modalTitle}>Log Finish Time</Text>
-            <Text style={styles.finishModalRaceName}>{finishModalRace?.name}</Text>
+            <Text style={styles.finishModalRaceName}>{formatRaceName(finishModalRace?.name)}</Text>
 
             {finishModalRace?.goal_finish_time && (
               <View style={styles.goalTimeRow}>
@@ -853,7 +853,7 @@ export default function RacesScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: RivalColors.surfaceLow },
   content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 48 },
-  header: { marginBottom: 24 },
+  header: { marginBottom: 0 },
   back: { color: RivalColors.accentFill, fontSize: 16 },
 
   titleRow: { flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 24 },

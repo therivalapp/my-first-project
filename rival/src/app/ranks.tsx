@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { LEVELS, getLevel } from '../lib/xp';
-import { RivalTopNav, RivalPageHeader } from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
 
 export default function RanksScreen() {
   const [totalXp, setTotalXp] = useState(0);
@@ -32,9 +32,7 @@ export default function RanksScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
         </View>
 
         <RivalPageHeader title="Ranks" subtitle="Start as a Rookie. Become Unrivaled." />
@@ -105,7 +103,7 @@ export default function RanksScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: RivalColors.surfaceLow },
   content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 48 },
-  header: { marginBottom: 24 },
+  header: { marginBottom: 0 },
   back: { color: RivalColors.accentFill, fontSize: 16 },
   title: { fontSize: 32, fontWeight: '900', color: RivalColors.textPrimary, marginBottom: 4 },
   subtitle: { fontSize: 14, color: RivalColors.textSecondary, marginBottom: 32 },

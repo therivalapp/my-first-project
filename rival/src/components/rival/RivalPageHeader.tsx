@@ -32,9 +32,13 @@ export function RivalPageHeader({
 const styles = StyleSheet.create({
   block: {
     alignSelf: 'center',
-    marginTop: 16,
-    marginBottom: 16,
-    paddingVertical: 8,
+    // Cut from the original 16/16/8 (then 8/10/6) — stacked under a lone
+    // back-button row (each screen's own `header` wrapper, now marginBottom
+    // 0), any top margin here just added straight back to the same dead
+    // space Ricky flagged twice. The two rows now sit directly adjacent.
+    marginTop: 0,
+    marginBottom: 10,
+    paddingVertical: 6,
     paddingHorizontal: 20,
   },
   blockRuled: {

@@ -7,7 +7,7 @@ import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { getLevel, xpProgressInLevel, LEVELS } from '../lib/xp';
 import { calculateStreak, StreakResult } from '../lib/streak';
 import { getSeasonStartISO, getCurrentSeasonYear, daysUntilSeasonEnd } from '../lib/season';
-import { RivalCard, RivalProgressBar, RivalIcon, RivalTopNav } from '../components/rival';
+import { RivalCard, RivalProgressBar, RivalIcon, RivalTopNav, RivalBackButton} from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RANK_LEVEL_COLORS, RivalSerifFamily } from '../constants/rivalTheme';
 
 // Refined Ember rank ramp only has 4 confirmed anchor colors from the Stitch
@@ -78,7 +78,7 @@ export default function StatsScreen() {
     setTotalDistanceKm(Math.round(activities.reduce((sum, a) => sum + (a.distance_meters || 0), 0) / 1000));
     setTotalElevationM(Math.round(activities.reduce((sum, a) => sum + (a.elevation_meters || 0), 0)));
     setTotalTimeMinutes(Math.round(activities.reduce((sum, a) => sum + (a.duration_seconds || 0), 0) / 60));
-    const HARD_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT', 'Run', 'Swim', 'Ride', 'WeightTraining', 'Rowing']);
+    const HARD_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT', 'Bootcamp', 'Run', 'Swim', 'Ride', 'WeightTraining', 'Rowing']);
     setHardTimeMinutes(Math.round(activities.filter(a => HARD_TYPES.has(a.activity_type)).reduce((sum, a) => sum + (a.duration_seconds || 0), 0) / 60));
 
     const { data: milestonesData } = await supabase.from('milestones').select('type').eq('user_id', targetUserId);
@@ -158,9 +158,7 @@ export default function StatsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
           <Text style={styles.headerTitle}>{isOwnProfile ? 'Your Stats' : `${displayName}'s Stats`}</Text>
           <View style={{ width: 48 }} />
         </View>

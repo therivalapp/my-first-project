@@ -435,9 +435,11 @@ entrypoint = "./functions/strava-webhook/index.ts"
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/strava-webhook/*.html" ]
 
-[functions.resolve-login-identifier]
+[functions.strava-subscription]
 enabled = true
-verify_jwt = false
+verify_jwt = true
+import_map = "./functions/strava-subscription/deno.json"
+entrypoint = "./functions/strava-subscription/index.ts"
 
 [functions.strava-backfill]
 enabled = true

@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { RivalColors } from '../constants/rivalTheme';
+import { RivalIcon, RivalBackButton} from '../components/rival';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Platform, ActivityIndicator, Image, Animated, Easing } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -1101,9 +1102,7 @@ export default function AiShareScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={goBack}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={goBack} color={RivalColors.accentFill} />
           <Text style={styles.title}>✨ AI Share</Text>
         </View>
 

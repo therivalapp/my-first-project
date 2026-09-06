@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, Platform, Image as RNImage } from 'react-native';
-import { Asset } from 'expo-asset';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
-import { RivalButton, RivalIcon } from '../components/rival';
+import { RivalButton, RivalIcon, RivalBackButton } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 
+const SMOKE_SOURCE = require('../../assets/images/backgrounds/optimized/podium-smoke.jpg');
 const REMEMBER_KEY = 'rival_remembered_email';
 
 function loadRemembered(): { email: string; remember: boolean } {
@@ -34,22 +34,6 @@ export default function SignInScreen() {
     setRememberMe(remember);
   }, []);
 
-  async function resolveEmail(identifier: string): Promise<string | null> {
-    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) return identifier;
-    const username = identifier.replace(/^@/, '');
-    try {
-      const res = await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/resolve-login-identifier`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY! },
-        body: JSON.stringify({ identifier: username }),
-      });
-      const data = await res.json();
-      return data.email ?? null;
-    } catch {
-      return null;
-    }
-  }
-
   async function handleSignIn() {
     if (!email || !password) {
       setError('Please fill in all fields');
@@ -59,13 +43,6 @@ export default function SignInScreen() {
     setLoading(true);
     setError('');
 
-    const resolvedEmail = await resolveEmail(email.trim());
-    if (!resolvedEmail) {
-      setError('Invalid login credentials');
-      setLoading(false);
-      return;
-    }
-
     if (Platform.OS === 'web') {
       if (rememberMe) {
         localStorage.setItem(REMEMBER_KEY, email);
@@ -74,7 +51,7 @@ export default function SignInScreen() {
       }
     }
 
-    const { error } = await supabase.auth.signInWithPassword({ email: resolvedEmail, password });
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
 
     if (error) {
       setError(error.message);
@@ -87,53 +64,25 @@ export default function SignInScreen() {
 
   async function handleForgotPassword() {
     if (!email) {
-      setError('Enter your email or username above first, then tap "Forgot password?"');
+      setError('Enter your email above first, then tap "Forgot password?"');
       return;
     }
     setResetLoading(true);
     setError('');
-    const resolvedEmail = await resolveEmail(email.trim());
     const redirectTo = Platform.OS === 'web' ? `${window.location.origin}/reset-password` : undefined;
-    if (resolvedEmail) {
-      await supabase.auth.resetPasswordForEmail(resolvedEmail, { redirectTo });
-    }
+    await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
     setResetLoading(false);
     setResetSent(true);
   }
 
-  // react-native-web's ImageBackground renders its background-image on an
-  // inner div that hardcodes centered positioning — the imageStyle/style prop
-  // never reaches it, so a custom focal point is silently a no-op there. A
-  // real DOM <img> with object-position behaves correctly instead.
-  // react-native-web's <Image> has no public resolveAssetSource (that's a
-  // native-RN-only static) — expo-asset's Asset.fromModule is the documented
-  // cross-platform way to turn a require()'d module id into a usable URI.
-  const bgUri = Platform.OS === 'web'
-    ? Asset.fromModule(require('../../assets/images/backgrounds/optimized/2-3-trail-runners-moving-along-a.jpg')).uri
-    : undefined;
-
   return (
     <View style={styles.bg}>
-      {Platform.OS === 'web' ? (
-        // @ts-ignore — intentional escape hatch to a real DOM element; RN Web's renderer is react-dom
-        <img
-          src={bgUri}
-          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '62% center', display: 'block' }}
-        />
-      ) : (
-        <RNImage
-          source={require('../../assets/images/backgrounds/optimized/2-3-trail-runners-moving-along-a.jpg')}
-          style={StyleSheet.absoluteFill}
-          resizeMode="cover"
-        />
-      )}
-      <View style={styles.scrim} />
+      <Image source={SMOKE_SOURCE} style={styles.smoke} resizeMode="cover" />
+      <Image source={SMOKE_SOURCE} style={styles.smokeTop} resizeMode="cover" />
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
 
-          <TouchableOpacity style={styles.back} onPress={() => router.back()}>
-            <Text style={styles.backText}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} style={styles.back} />
 
           <Text style={styles.logo}>RIVAL</Text>
 
@@ -159,10 +108,10 @@ export default function SignInScreen() {
             ) : null}
 
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email or Username</Text>
+              <Text style={styles.label}>Email</Text>
               <TextInput
                 style={styles.input}
-                placeholder="your@email.com or @username"
+                placeholder="your@email.com"
                 placeholderTextColor={RivalColors.textSecondary}
                 value={email}
                 onChangeText={setEmail}
@@ -221,11 +170,40 @@ const styles = StyleSheet.create({
   bg: {
     flex: 1,
     position: 'relative',
+    backgroundColor: RivalColors.surfaceLowest,
   },
-  scrim: {
+  // Same warm-smoke texture as the Today screen's Weekly Leader/Legacy
+  // sections — low opacity, faded on both edges so it reads as ambient
+  // atmosphere behind the logo/card rather than a cropped photo.
+  // Same warm-smoke texture as the Today screen's Weekly Leader/Legacy
+  // sections — low opacity, faded on both edges so it reads as ambient
+  // atmosphere behind the logo/card rather than a cropped photo.
+  smoke: {
     position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(14,14,14,0.35)',
+    bottom: 0, left: 0, right: 0,
+    width: '100%', height: 500,
+    opacity: 0.3,
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+        } as any)
+      : {}),
+  },
+  // Second copy, mirrored vertically and pinned to the top instead — smoke
+  // rising from both edges toward the middle rather than just the bottom.
+  smokeTop: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    width: '100%', height: 500,
+    opacity: 0.3,
+    transform: [{ scaleY: -1 }],
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+        } as any)
+      : {}),
   },
   container: {
     flex: 1,
@@ -253,7 +231,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   card: {
-    backgroundColor: 'rgba(19,19,19,0.75)',
+    backgroundColor: RivalColors.surfaceHigh,
     borderRadius: RivalRadius.lg,
     padding: 24,
     gap: 16,
@@ -263,11 +241,13 @@ const styles = StyleSheet.create({
     color: RivalColors.textPrimary,
     textTransform: 'uppercase',
     letterSpacing: 2,
+    textAlign: 'center',
   },
   subtitle: {
     ...RivalType.bodyMd,
     color: RivalColors.textSecondary,
     marginTop: -8,
+    textAlign: 'center',
   },
   errorBox: {
     backgroundColor: RivalColors.errorContainer,

@@ -18,7 +18,15 @@ import { RivalColors } from '../../constants/rivalTheme';
 // MaterialIcons' bell has its ring-lines crowded right against the bell body).
 const ICONS = {
   // Navigation / interface
-  back: 'arrow-back',
+  // The thin iOS-style chevron (not a full-shaft arrow, which read as a
+  // generic "go back" link rather than the app-chrome back button Ricky
+  // pointed at). Specifically the -new variant: plain 'arrow-back-ios'
+  // draws its chevron in the LEFT half of its advance width (ink centre
+  // sits 4.6px off at size 18), so it can never look centred inside
+  // RivalBackButton's circle without a hand-tuned offset that would then
+  // be wrong at every other icon size. 'arrow-back-ios-new' is the same
+  // shape drawn centred (measured: 0.09px off), so no nudge is needed.
+  back: 'arrow-back-ios-new',
   forward: 'arrow-forward',
   // Calendar month/year nav — chevron family (not arrow-back/forward above,
   // which are line-arrows and don't visually match the double-chevron).
@@ -62,7 +70,10 @@ const ICONS = {
   flag: 'flag',
   key: 'vpn-key',
   globe: 'public',
-  chat: 'chat-bubble',
+  // Ricky's pick from a side-by-side icon comparison, 2026-08-24
+  // — MaterialCommunityIcons' open-outline speech bubble, not MaterialIcons'
+  // filled one this used to be.
+  chat: ['mci', 'chat-outline'] as const,
   pin: 'push-pin',
   star: 'star',
   starOutline: 'star-border',
@@ -118,6 +129,7 @@ const ICONS = {
   crossfit: ['mci', 'weight-lifter'] as const,
   hyrox: 'local-fire-department',
   hiit: 'bolt',
+  bootcamp: 'sports',
   hike: 'hiking',
   walk: 'directions-walk',
   yoga: 'self-improvement',
@@ -155,6 +167,7 @@ const ACTIVITY_TYPE_TO_ICON: Record<string, RivalIconName> = {
   CrossFit: 'crossfit',
   Hyrox: 'hyrox',
   HIIT: 'hiit',
+  Bootcamp: 'bootcamp',
   Hike: 'hike',
   Walk: 'walk',
   Yoga: 'yoga',

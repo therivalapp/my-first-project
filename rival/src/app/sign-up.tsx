@@ -1,14 +1,18 @@
 import { useState } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, Platform, Image as RNImage } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { Asset } from 'expo-asset';
 import { supabase } from '../lib/supabase';
-import { RivalButton, RivalIcon } from '../components/rival';
+import { displayToIsoDate, maskDateInput } from '../lib/dateFormat';
+import { RivalButton, RivalIcon, RivalBackButton } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 
+const SMOKE_SOURCE = require('../../assets/images/backgrounds/optimized/podium-smoke.jpg');
+
 export default function SignUpScreen() {
-  const [displayName, setDisplayName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [dob, setDob] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -16,15 +20,23 @@ export default function SignUpScreen() {
   const [error, setError] = useState('');
 
   async function handleSignUp() {
-    if (!displayName || !email || !password) {
+    if (!firstName.trim() || !lastName.trim() || !dob.trim() || !email || !password) {
       setError('Please fill in all fields');
+      return;
+    }
+
+    const dobIso = displayToIsoDate(dob.trim());
+    if (!dobIso) {
+      setError('Enter your date of birth as DD/MM/YYYY');
       return;
     }
 
     setLoading(true);
     setError('');
 
-    const { error } = await supabase.auth.signUp({
+    const displayName = `${firstName.trim()} ${lastName.trim()}`;
+
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
@@ -38,62 +50,69 @@ export default function SignUpScreen() {
       return;
     }
 
+    // The handle_new_user trigger only inserts id/email/display_name from
+    // auth metadata — date of birth isn't part of that, so it's a separate
+    // write against the row the trigger just created.
+    if (data.user) {
+      await supabase.from('users').update({ date_of_birth: dobIso }).eq('id', data.user.id);
+    }
+
     router.replace('/home');
   }
 
-  // Same treatment as sign-in: react-native-web's ImageBackground paints its
-  // image on an inner div that hardcodes centred positioning, so a focal point
-  // passed via imageStyle is silently ignored. A real DOM <img> with
-  // object-position behaves correctly; native falls back to <Image>.
-  const bgUri = Platform.OS === 'web'
-    ? Asset.fromModule(require('../../assets/images/backgrounds/optimized/a-small-group-of-diverse-athletes-2.jpg')).uri
-    : undefined;
-
   return (
     <View style={styles.bg}>
-      {Platform.OS === 'web' ? (
-        // @ts-ignore — intentional escape hatch to a real DOM element; RN Web's renderer is react-dom
-        <img
-          src={bgUri}
-          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: '50% center', display: 'block' }}
-        />
-      ) : (
-        <RNImage
-          source={require('../../assets/images/backgrounds/optimized/a-small-group-of-diverse-athletes-2.jpg')}
-          style={StyleSheet.absoluteFill}
-          resizeMode="cover"
-        />
-      )}
-      <View style={styles.scrim} />
-
+      <Image source={SMOKE_SOURCE} style={styles.smoke} resizeMode="cover" />
+      <Image source={SMOKE_SOURCE} style={styles.smokeTop} resizeMode="cover" />
       <SafeAreaView style={styles.container}>
         <View style={styles.content}>
 
-          <TouchableOpacity style={styles.back} onPress={() => router.back()}>
-            <Text style={styles.backText}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} style={styles.back} />
 
           <Text style={styles.logo}>RIVAL</Text>
 
           <View style={styles.card}>
-            <Text style={styles.title}>Create Account</Text>
-            <Text style={styles.subtitle}>Join RIVAL and start competing</Text>
-
             {error ? (
               <View style={styles.errorBox}>
                 <Text style={styles.errorText}>{error}</Text>
               </View>
             ) : null}
 
+            <View style={styles.nameRow}>
+              <View style={[styles.inputGroup, styles.nameField]}>
+                <Text style={styles.label}>First Name</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="First name"
+                  placeholderTextColor={RivalColors.textSecondary}
+                  value={firstName}
+                  onChangeText={setFirstName}
+                  autoCapitalize="words"
+                />
+              </View>
+              <View style={[styles.inputGroup, styles.nameField]}>
+                <Text style={styles.label}>Last Name</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Last name"
+                  placeholderTextColor={RivalColors.textSecondary}
+                  value={lastName}
+                  onChangeText={setLastName}
+                  autoCapitalize="words"
+                />
+              </View>
+            </View>
+
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>Display Name</Text>
+              <Text style={styles.label}>Date of Birth</Text>
               <TextInput
                 style={styles.input}
-                placeholder="How friends will see you"
+                placeholder="DD/MM/YYYY"
                 placeholderTextColor={RivalColors.textSecondary}
-                value={displayName}
-                onChangeText={setDisplayName}
-                autoCapitalize="words"
+                value={dob}
+                onChangeText={(v) => setDob(maskDateInput(v))}
+                keyboardType="number-pad"
+                maxLength={10}
               />
             </View>
 
@@ -155,10 +174,35 @@ const styles = StyleSheet.create({
     position: 'relative',
     backgroundColor: RivalColors.surfaceLowest,
   },
-  scrim: {
+  // Same warm-smoke texture as the Today screen's Weekly Leader/Legacy
+  // sections — low opacity, faded on both edges so it reads as ambient
+  // atmosphere behind the logo/card rather than a cropped photo.
+  smoke: {
     position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(14,14,14,0.35)',
+    bottom: 0, left: 0, right: 0,
+    width: '100%', height: 500,
+    opacity: 0.3,
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+        } as any)
+      : {}),
+  },
+  // Second copy, mirrored vertically and pinned to the top instead — smoke
+  // rising from both edges toward the middle rather than just the bottom.
+  smokeTop: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    width: '100%', height: 500,
+    opacity: 0.3,
+    transform: [{ scaleY: -1 }],
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+        } as any)
+      : {}),
   },
   container: {
     flex: 1,
@@ -186,7 +230,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   card: {
-    backgroundColor: 'rgba(19,19,19,0.75)',
+    backgroundColor: RivalColors.surfaceHigh,
     borderRadius: RivalRadius.lg,
     padding: 24,
     gap: 16,
@@ -212,6 +256,13 @@ const styles = StyleSheet.create({
   },
   inputGroup: {
     gap: 8,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  nameField: {
+    flex: 1,
   },
   label: {
     ...RivalType.labelCaps,

@@ -45,7 +45,7 @@ serve(async (req) => {
 
     const { data: message } = await supabase
       .from('league_messages')
-      .select('id, league_id, user_id, kind, activity_type, scheduled_at, location, users(display_name, email, username, display_style)')
+      .select('id, league_id, user_id, kind, activity_type, scheduled_at, location, users(display_name, email)')
       .eq('id', messageId)
       .single()
 

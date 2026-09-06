@@ -28,7 +28,7 @@ serve(async (req) => {
 
     // ── 1v1 challenge sent ─────────────────────────────────────────────────────
     if (type === '1v1_sent') {
-      const { data: c } = await supabase.from('league_challenges').select('*, users!challenger_id(display_name, email, username, display_style)').eq('id', challengeId).single();
+      const { data: c } = await supabase.from('league_challenges').select('*, users!challenger_id(display_name, email)').eq('id', challengeId).single();
       if (!c) return new Response(JSON.stringify({ sent: 0 }), { status: 200, headers: corsHeaders });
 
       const senderName = formatDisplayName(c.users as any, 'Someone');
@@ -48,7 +48,7 @@ serve(async (req) => {
     // ── 1v1 challenge response ─────────────────────────────────────────────────
     if (type === '1v1_response') {
       const { accept } = body;
-      const { data: c } = await supabase.from('league_challenges').select('*, users!opponent_id(display_name, email, username, display_style)').eq('id', challengeId).single();
+      const { data: c } = await supabase.from('league_challenges').select('*, users!opponent_id(display_name, email)').eq('id', challengeId).single();
       if (!c) return new Response(JSON.stringify({ sent: 0 }), { status: 200, headers: corsHeaders });
 
       const responderName = formatDisplayName(c.users as any, 'Your opponent');

@@ -45,7 +45,7 @@ serve(async (req) => {
 
     const { data: race } = await supabase
       .from('races')
-      .select('id, name, race_type, user_id, users(display_name, email, username, display_style)')
+      .select('id, name, race_type, user_id, users(display_name, email)')
       .eq('id', raceId)
       .single()
 

@@ -2,16 +2,11 @@ import { useEffect } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { Asset } from 'expo-asset';
 import { supabase } from '../lib/supabase';
 import { RivalButton } from '../components/rival';
 import { RivalColors, RivalType } from '../constants/rivalTheme';
 
-const HERO_SOURCE = require('../../assets/images/backgrounds/optimized/a-small-group-of-diverse-athletes-2.jpg');
-// RN Web's <Image> has no public resolveAssetSource (native-RN-only static) — see the
-// same note in RivalFixedBackground.tsx. expo-asset's Asset.fromModule is the
-// documented cross-platform way to turn a require()'d module id into a usable URI.
-const HERO_URI = Platform.OS === 'web' ? Asset.fromModule(HERO_SOURCE).uri : undefined;
+const SMOKE_SOURCE = require('../../assets/images/backgrounds/optimized/podium-smoke.jpg');
 
 export default function WelcomeScreen() {
   useEffect(() => {
@@ -25,24 +20,8 @@ export default function WelcomeScreen() {
   return (
     <View style={styles.page}>
       <View style={styles.hero}>
-        {/* Same web-only real-<img> escape hatch as RivalFixedBackground, and for the
-            same reason: react-native-web's Image/ImageBackground hardcode
-            backgroundPosition:'center' on the element that actually paints, so a
-            focal point passed via style/imageStyle is silently ignored on web. This
-            hero doesn't need one (centered is fine), but a plain <img> is also just
-            the correct primitive for a normal block-flow photo — no position:fixed,
-            no viewport math, it simply fills this relatively-positioned section. */}
-        {Platform.OS === 'web' ? (
-          // @ts-ignore — intentional escape hatch to a real DOM element.
-          <img
-            src={HERO_URI}
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-          />
-        ) : (
-          <Image source={HERO_SOURCE} style={styles.heroImageNative} resizeMode="cover" />
-        )}
-        <View style={styles.scrim} />
-
+        <Image source={SMOKE_SOURCE} style={styles.smoke} resizeMode="cover" />
+        <Image source={SMOKE_SOURCE} style={styles.smokeTop} resizeMode="cover" />
         <SafeAreaView style={styles.content}>
           <Text style={styles.logo}>RIVAL</Text>
 
@@ -51,7 +30,12 @@ export default function WelcomeScreen() {
           </View>
 
           <View style={styles.buttons}>
-            <RivalButton label="Get Started" onPress={() => router.push('/sign-up')} />
+            <RivalButton
+              label="Let's Go"
+              onPress={() => router.push('/sign-up')}
+              labelStyle={{ textTransform: 'uppercase', letterSpacing: 2, fontWeight: '800' }}
+              style={{ paddingHorizontal: 19, paddingVertical: 11 }}
+            />
             <TouchableOpacity onPress={() => router.push('/sign-in')} style={styles.signInLink}>
               <Text style={styles.signInLinkText}>Sign In</Text>
             </TouchableOpacity>
@@ -80,11 +64,35 @@ const styles = StyleSheet.create({
     minHeight: '100dvh' as any,
     width: '100%',
   },
-  heroImageNative: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
-  scrim: {
+  // Same warm-smoke texture as the Today screen's Weekly Leader/Legacy
+  // sections — low opacity, faded on both edges so it reads as ambient
+  // atmosphere behind the logo rather than a cropped photo.
+  smoke: {
     position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(14,14,14,0.4)',
+    bottom: 0, left: 0, right: 0,
+    width: '100%', height: 500,
+    opacity: 0.3,
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+        } as any)
+      : {}),
+  },
+  // Second copy, mirrored vertically and pinned to the top instead — smoke
+  // rising from both edges toward the middle rather than just the bottom.
+  smokeTop: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0,
+    width: '100%', height: 500,
+    opacity: 0.3,
+    transform: [{ scaleY: -1 }],
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 30%, black 60%, transparent 100%)',
+        } as any)
+      : {}),
   },
   content: {
     minHeight: '100dvh' as any,

@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { ACTIVITY_ICONS } from '../constants/activityIcons';
-import { RivalTopNav } from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalBackButton} from '../components/rival';
 
 type RecapData = {
   type: string;
@@ -64,9 +64,7 @@ export default function RecapScreen() {
       <RivalTopNav active="today" />
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
         </View>
 
         {loading && (

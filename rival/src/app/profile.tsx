@@ -1,23 +1,14 @@
-import { useEffect, useState } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, useWindowDimensions, RefreshControl } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, useWindowDimensions, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { notify } from '../lib/notify';
-import { isValidUsername } from '../lib/identity';
+import { connectStrava, runFullStravaImport } from '../lib/strava';
 import { getQuote, QuoteTone } from '../lib/quotes';
-import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav } from '../components/rival';
+import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav, StravaImportReveal, RivalBackButton} from '../components/rival';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
-
-const DISPLAY_STYLES: Array<{ value: string; label: string; sample: (name: string, username: string | null) => string }> = [
-  { value: 'real_name_username', label: 'Real name + Username', sample: (name, u) => u ? `${name}  ·  @${u}` : name },
-  { value: 'username_only', label: 'Username only', sample: (_name, u) => u ? `@${u}` : 'Set a username first' },
-  { value: 'first_last_initial', label: 'First name + Last initial', sample: (name) => {
-      const parts = name.trim().split(/\s+/);
-      return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}.` : parts[0] || name;
-    } },
-];
 
 const QUOTE_TONES: Array<{ value: QuoteTone; label: string; sub: string }> = [
   { value: 'blunt', label: 'Blunt', sub: 'Hard truths, no cushioning.' },
@@ -50,20 +41,18 @@ export default function ProfileScreen() {
   const [activeTab, setActiveTab] = useState<TabId>(
     tabParam && TABS.some(t => t.id === tabParam) ? tabParam : 'personal'
   );
+  // Mobile shows the menu and the chosen panel as two separate screens, so a
+  // panel never has to share the viewport with the list that opened it. Wide
+  // layouts ignore this entirely — there the sidebar and panel sit together.
+  // A ?tab= deep link opens straight to that panel.
+  const [panelOpen, setPanelOpen] = useState(!!(tabParam && TABS.some(t => t.id === tabParam)));
 
   const [displayName, setDisplayName] = useState('');
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
-  const [username, setUsername] = useState<string | null>(null);
-  const [editingUsername, setEditingUsername] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
-  const [usernameError, setUsernameError] = useState('');
-  const [savingUsername, setSavingUsername] = useState(false);
   const [bio, setBio] = useState('');
   const [newBio, setNewBio] = useState('');
   const [savingBio, setSavingBio] = useState(false);
-  const [displayStyle, setDisplayStyle] = useState('real_name_username');
-  const [savingStyle, setSavingStyle] = useState(false);
   const [quoteTone, setQuoteTone] = useState<QuoteTone>('balanced');
   const [savingTone, setSavingTone] = useState(false);
   const [quotePreview, setQuotePreview] = useState<string | null>(null);
@@ -75,6 +64,28 @@ export default function ProfileScreen() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [importingHistory, setImportingHistory] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const [importReveal, setImportReveal] = useState<{ seconds: number; effort: number; activities: number } | null>(null);
+
+  // The counter only ticks once per imported page, so between ticks nothing
+  // on screen moves and a long import reads as hung. A slow opacity breathe
+  // fills those gaps — deliberately a gentle pulse rather than a flash,
+  // which would read as an error/alert state.
+  const importPulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!importingHistory) {
+      importPulse.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(importPulse, { toValue: 0.45, duration: 700, useNativeDriver: true }),
+        Animated.timing(importPulse, { toValue: 1, duration: 700, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [importingHistory, importPulse]);
   const [syncing, setSyncing] = useState(false);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -106,7 +117,7 @@ export default function ProfileScreen() {
     }
 
     const [userRes, stravaRes] = await Promise.all([
-      supabase.from('users').select('display_name, is_admin, avatar_url, username, bio, display_style, quote_tone').eq('id', user.id).single(),
+      supabase.from('users').select('display_name, is_admin, avatar_url, bio, quote_tone').eq('id', user.id).single(),
       supabase.from('fitness_connections').select('athlete_firstname, athlete_lastname').eq('user_id', user.id).eq('provider', 'strava').maybeSingle(),
     ]);
 
@@ -115,11 +126,8 @@ export default function ProfileScreen() {
     setNewName(name);
     setIsAdmin(!!userRes.data?.is_admin);
     setAvatarUrl(userRes.data?.avatar_url || null);
-    setUsername(userRes.data?.username || null);
-    setNewUsername(userRes.data?.username || '');
     setBio(userRes.data?.bio || '');
     setNewBio(userRes.data?.bio || '');
-    setDisplayStyle(userRes.data?.display_style || 'real_name_username');
     setQuoteTone((userRes.data?.quote_tone as QuoteTone) || 'balanced');
     setStravaConnected(!!stravaRes.data);
     setStravaAthleteName(
@@ -148,27 +156,6 @@ export default function ProfileScreen() {
     setSaving(false);
   }
 
-  async function saveUsername() {
-    const trimmed = newUsername.trim().toLowerCase();
-    if (trimmed && !isValidUsername(trimmed)) {
-      setUsernameError('3-20 characters, lowercase letters, numbers, underscores only.');
-      return;
-    }
-    setSavingUsername(true);
-    setUsernameError('');
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setSavingUsername(false); return; }
-    const { error } = await supabase.from('users').update({ username: trimmed || null }).eq('id', user.id);
-    if (error) {
-      setUsernameError(error.code === '23505' ? 'That username is already taken.' : 'Could not save username.');
-      setSavingUsername(false);
-      return;
-    }
-    setUsername(trimmed || null);
-    setEditingUsername(false);
-    setSavingUsername(false);
-  }
-
   async function saveBio() {
     const trimmed = newBio.trim();
     setSavingBio(true);
@@ -179,21 +166,6 @@ export default function ProfileScreen() {
     setBio(trimmed);
     setNewBio(trimmed);
     setSavingBio(false);
-  }
-
-  async function updateDisplayStyle(style: string) {
-    if (style === displayStyle) return;
-    setSavingStyle(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setSavingStyle(false); return; }
-    const { error } = await supabase.from('users').update({ display_style: style }).eq('id', user.id);
-    if (error) {
-      notify("Couldn't save that name style", error.message);
-      setSavingStyle(false);
-      return;
-    }
-    setDisplayStyle(style);
-    setSavingStyle(false);
   }
 
   async function updateQuoteTone(tone: QuoteTone) {
@@ -320,11 +292,20 @@ export default function ProfileScreen() {
       });
       const data = await res.json();
       if (!res.ok) {
-        notify('Sync failed', data.error || 'Could not sync with Strava. Try reconnecting Strava.');
-      } else if (data.saved === 0) {
-        notify('Nothing new', 'No new Strava activities found.');
+        // `data.message` covers Supabase's own gateway errors (timeouts,
+        // resource limits), which use a different shape to our functions'
+        // `error` field — without it those surfaced as the generic line
+        // below and hid the real cause for several rounds of debugging.
+        notify('Sync failed', data.error || data.message || 'Could not sync with Strava. Try reconnecting Strava.');
+      } else if (!data.inserted) {
+        // `saved` counts every activity touched, including ones that already
+        // existed and just got their stats refreshed — data.inserted is the
+        // only true "new" count. Without this split, syncing an account with
+        // no new activity at all still said "Pulled in 30 new activities",
+        // which read as sync doing something it wasn't.
+        notify('Up to date', "You're already synced with Strava — nothing new to pull in.");
       } else {
-        notify('Synced', `Pulled in ${data.saved} new activities.`);
+        notify('Synced', `Pulled in ${data.inserted} new activit${data.inserted === 1 ? 'y' : 'ies'}.`);
       }
     } catch {
       notify('Sync failed', 'Could not reach the server. Check your connection and try again.');
@@ -345,31 +326,18 @@ export default function ProfileScreen() {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return;
     setImportingHistory(true);
-    try {
-      const res = await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/strava-full-import`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-          'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
-        },
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        notify('Import failed', data.error || 'Could not import your Strava history.');
-        return;
-      }
-      if (data.partial) {
-        notify('Import paused', `Pulled in ${data.saved} activities before it was interrupted. ${data.partialReason || 'Run the import again shortly to get the rest.'}`);
-      } else {
-        notify('Import complete', `Pulled in ${data.saved} activities from your full Strava history.`);
-      }
-      loadProfile();
-    } catch {
-      notify('Import failed', 'Could not reach the server. Try again.');
-    } finally {
-      setImportingHistory(false);
+    setImportProgress(0);
+    const result = await runFullStravaImport(session.access_token, (p) => setImportProgress(p.savedSoFar));
+    setImportingHistory(false);
+    if (!result.ok) {
+      notify('Import failed', result.error);
+      return;
     }
+    // Same payoff screen the first-time Strava connect shows, rather than a
+    // plain "Import complete" alert — the point of the import is the time and
+    // Effort it just brought in, so show that instead of an activity count.
+    setImportReveal({ seconds: result.importedSeconds, effort: result.importedEffort, activities: result.saved });
+    loadProfile();
   }
 
   async function handleSignOut() {
@@ -472,34 +440,6 @@ export default function ProfileScreen() {
             )}
           </View>
 
-          {/* Username */}
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>USERNAME</Text>
-            {editingUsername ? (
-              <View style={styles.editRow}>
-                <Text style={styles.usernameAt}>@</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newUsername}
-                  onChangeText={(t) => { setNewUsername(t.toLowerCase().replace(/[^a-z0-9_]/g, '')); setUsernameError(''); }}
-                  autoFocus autoCapitalize="none" placeholder="username" placeholderTextColor={RivalColors.textSecondary}
-                />
-                <TouchableOpacity style={styles.saveChip} onPress={saveUsername} disabled={savingUsername}>
-                  <Text style={styles.saveChipText}>{savingUsername ? '…' : 'Save'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setEditingUsername(false); setNewUsername(username || ''); setUsernameError(''); }}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity style={styles.readField} onPress={() => setEditingUsername(true)}>
-                <Text style={styles.readFieldValue}>{username ? `@${username}` : 'Set a username'}</Text>
-                <RivalIcon name="edit" size={14} color={RivalColors.textSecondary} />
-              </TouchableOpacity>
-            )}
-            {!!usernameError && <Text style={styles.errorText}>{usernameError}</Text>}
-          </View>
-
           {/* Email (read-only) */}
           <View style={styles.field}>
             <Text style={styles.fieldLabel}>EMAIL ADDRESS</Text>
@@ -534,29 +474,6 @@ export default function ProfileScreen() {
             )}
           </View>
         </View>
-      </View>
-
-      {/* Name display style */}
-      <View style={styles.subSection}>
-        <Text style={styles.subSectionTitle}>HOW OTHERS SEE YOUR NAME</Text>
-        {DISPLAY_STYLES.map((opt) => {
-          const selected = displayStyle === opt.value;
-          const disabled = opt.value === 'username_only' && !username;
-          return (
-            <TouchableOpacity
-              key={opt.value}
-              style={[styles.optionRow, selected && styles.optionRowActive]}
-              onPress={() => !disabled && updateDisplayStyle(opt.value)}
-              disabled={savingStyle || disabled}
-            >
-              <View style={styles.optionTextWrap}>
-                <Text style={[styles.optionLabel, selected && { color: RivalColors.accentText }]}>{opt.label}</Text>
-                <Text style={styles.optionSample}>{opt.sample(displayName || 'Athlete', username)}</Text>
-              </View>
-              <Text style={[styles.optionCheck, selected && { color: RivalColors.accentText }]}>{selected ? '●' : '○'}</Text>
-            </TouchableOpacity>
-          );
-        })}
       </View>
 
       {/* Daily quote tone */}
@@ -602,7 +519,7 @@ export default function ProfileScreen() {
 
   const appsPanel = (
     <RivalCard glass style={styles.panel}>
-      <Text style={styles.panelTitle}>Connected Apps</Text>
+      {wide && <Text style={styles.panelTitle}>Connected Apps</Text>}
       <Text style={styles.panelSub}>Sync your training automatically from the services you already use.</Text>
 
       <View style={styles.appRow}>
@@ -620,8 +537,11 @@ export default function ProfileScreen() {
           </View>
         </View>
         {stravaConnected
-          ? <View style={[styles.connectedBadge, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}><RivalIcon name="check" size={12} color={RivalColors.tertiary} /><Text style={styles.connectedBadgeText}>Connected</Text></View>
-          : <RivalButton label="Connect" onPress={() => router.push('/home')} variant="secondary" style={styles.appConnectBtn} />}
+          // The status line to the left already says "Connected · Name" — a
+          // second "Connected" pill repeating the same word read as clutter.
+          // A bare checkmark confirms the state without saying it twice.
+          ? <View style={styles.connectedCheck}><RivalIcon name="check" size={14} color={RivalColors.tertiary} /></View>
+          : <RivalButton label="Connect" onPress={() => connectStrava(loadProfile)} variant="secondary" style={styles.appConnectBtn} />}
       </View>
 
       {stravaConnected && (
@@ -633,13 +553,19 @@ export default function ProfileScreen() {
             variant="secondary"
             style={styles.actionBtn}
           />
-          <RivalButton
-            label={importingHistory ? 'Importing…' : 'Import full Strava history'}
-            onPress={importFullHistory}
-            disabled={importingHistory}
-            variant="secondary"
-            style={styles.actionBtn}
-          />
+          <Animated.View style={{ opacity: importPulse }}>
+            <RivalButton
+              label={
+                importingHistory
+                  ? (importProgress > 0 ? `Importing… ${importProgress} activities` : 'Importing…')
+                  : 'Import full Strava history'
+              }
+              onPress={importFullHistory}
+              disabled={importingHistory}
+              variant="secondary"
+              style={styles.actionBtn}
+            />
+          </Animated.View>
           {!confirmingDisconnect ? (
             <RivalButton
               label="Disconnect Strava"
@@ -651,11 +577,11 @@ export default function ProfileScreen() {
             <RivalCard style={styles.disconnectConfirmCard}>
               <Text style={styles.disconnectConfirmTitle}>Keep the imported activities?</Text>
               <Text style={styles.disconnectConfirmSub}>
-                If this Strava connection was a mistake (e.g. the wrong account got linked), remove the activities it imported too — not just the connection.
+                Linked the wrong account? Remove its imported activities too, not just the connection.
               </Text>
-              <RivalButton label={disconnecting ? '…' : 'Just disconnect'} onPress={() => disconnectStrava(false)} disabled={disconnecting} variant="destructive" style={styles.disconnectConfirmBtn} />
-              <RivalButton label={disconnecting ? '…' : 'Disconnect & remove imported activities'} onPress={() => disconnectStrava(true)} disabled={disconnecting} variant="destructive" style={styles.disconnectConfirmBtn} />
-              <TouchableOpacity onPress={() => setConfirmingDisconnect(false)} disabled={disconnecting}>
+              <RivalButton label={disconnecting ? '…' : 'Disconnect Only'} onPress={() => disconnectStrava(false)} disabled={disconnecting} variant="secondary" style={styles.disconnectConfirmBtn} />
+              <RivalButton label={disconnecting ? '…' : 'Disconnect & Remove'} onPress={() => disconnectStrava(true)} disabled={disconnecting} variant="destructive" style={[styles.disconnectConfirmBtn, styles.disconnectDestructiveBtn]} />
+              <TouchableOpacity onPress={() => setConfirmingDisconnect(false)} disabled={disconnecting} style={styles.disconnectCancelBtn}>
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
             </RivalCard>
@@ -677,7 +603,7 @@ export default function ProfileScreen() {
 
   const notificationsPanel = (
     <RivalCard glass style={styles.panel}>
-      <Text style={styles.panelTitle}>Notifications</Text>
+      {wide && <Text style={styles.panelTitle}>Notifications</Text>}
       <Text style={styles.panelSub}>Choose what RIVAL pings you about.</Text>
       <View style={styles.comingSoonBox}>
         <RivalIcon name="notifications" size={40} color={RivalColors.textSecondary} />
@@ -693,7 +619,7 @@ export default function ProfileScreen() {
 
   const accountPanel = (
     <RivalCard glass style={styles.panel}>
-      <Text style={styles.panelTitle}>Account</Text>
+      {wide && <Text style={styles.panelTitle}>Account</Text>}
 
       <View style={styles.accountMetaRow}>
         <Text style={styles.accountMetaLabel}>Member since</Text>
@@ -724,15 +650,23 @@ export default function ProfileScreen() {
   const sidebar = (
     <View style={[styles.sidebar, wide && styles.sidebarWide]}>
       {TABS.map((t) => {
-        const active = activeTab === t.id;
+        // On mobile nothing is "active" — the list is a menu you leave, so a
+        // highlighted row would point at a screen you're not on.
+        const active = wide && activeTab === t.id;
         return (
           <TouchableOpacity
             key={t.id}
-            style={[styles.sidebarBtn, wide && styles.sidebarBtnWide, active && styles.sidebarBtnActive]}
-            onPress={() => setActiveTab(t.id)}
+            style={[styles.sidebarBtn, active && styles.sidebarBtnActive]}
+            onPress={() => { setActiveTab(t.id); if (!wide) setPanelOpen(true); }}
           >
             <RivalIcon name={t.icon} size={16} color={active ? RivalColors.accentText : RivalColors.textSecondary} />
             <Text style={[styles.sidebarLabel, active && { color: RivalColors.accentText }]}>{t.label}</Text>
+            {!wide && (
+              <>
+                <View style={{ flex: 1 }} />
+                <RivalIcon name="chevronRight" size={18} color={RivalColors.textSecondary} />
+              </>
+            )}
           </TouchableOpacity>
         );
       })}
@@ -747,10 +681,18 @@ export default function ProfileScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handlePullToRefresh} tintColor={RivalColors.accentText} colors={[RivalColors.accentFill]} />}
       >
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Profile</Text>
+          {/* Inside a panel, back means "back to the menu" — leaving the page
+              entirely would skip a level the user can see they're inside. */}
+          <RivalBackButton
+            onPress={() => {
+              if (!wide && panelOpen) { setPanelOpen(false); return; }
+              router.canGoBack() ? router.back() : router.replace('/home');
+            }}
+            color={RivalColors.accentFill}
+          />
+          <Text style={styles.headerTitle}>
+            {!wide && panelOpen ? (TABS.find(t => t.id === activeTab)?.label ?? 'Profile') : 'Profile'}
+          </Text>
           <View style={{ width: 48 }} />
         </View>
 
@@ -759,20 +701,38 @@ export default function ProfileScreen() {
             {sidebar}
             <View style={styles.wideContent}>{panelFor[activeTab]}</View>
           </View>
+        ) : panelOpen ? (
+          panelFor[activeTab]
         ) : (
-          <>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll} contentContainerStyle={styles.tabScrollContent}>
-              {sidebar}
-            </ScrollView>
-            {panelFor[activeTab]}
-          </>
+          sidebar
         )}
       </ScrollView>
+
+      {importReveal ? (
+        <View style={styles.revealOverlay}>
+          <StravaImportReveal
+            seconds={importReveal.seconds}
+            effort={importReveal.effort}
+            activities={importReveal.activities}
+            onDone={() => setImportReveal(null)}
+          />
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  // Full-bleed takeover so the count-up is the only thing on screen —
+  // the same weight the connect-flow reveal gets, not a small dialog.
+  revealOverlay: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: RivalColors.surfaceLowest,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 60,
+  },
   container: { flex: 1, backgroundColor: RivalColors.surfaceLow },
   content: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 40, maxWidth: 1200, width: '100%', alignSelf: 'center' },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -786,12 +746,13 @@ const styles = StyleSheet.create({
   wideContent: { flex: 1 },
 
   // Sidebar
+  // Row on mobile (a chip strip inside the horizontal ScrollView), column
+  // only once the sidebar is a real sidebar. This defaulted to column, so on
+  // mobile four full-width buttons stacked down the screen and ate ~190px
+  // before any content started.
   sidebar: { gap: 8 },
   sidebarWide: { width: '22%', minWidth: 200, maxWidth: 280, flexGrow: 0, flexShrink: 0 },
-  tabScroll: { marginBottom: 16, flexGrow: 0 },
-  tabScrollContent: { flexDirection: 'row', gap: 8 },
-  sidebarBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12, borderRadius: RivalRadius.DEFAULT, backgroundColor: RivalColors.surfaceContainer },
-  sidebarBtnWide: { width: '100%' },
+  sidebarBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderRadius: RivalRadius.DEFAULT, backgroundColor: RivalColors.surfaceContainer },
   sidebarBtnActive: { backgroundColor: RivalColors.surfaceContainerHigh, borderWidth: 1, borderColor: `${RivalColors.accentFill}44` },
   sidebarIcon: { fontSize: 16 },
   sidebarLabel: { fontSize: 14, fontWeight: '600', color: RivalColors.textSecondary },
@@ -820,16 +781,18 @@ const styles = StyleSheet.create({
   editHint: { fontSize: 14 },
   editRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   input: { flex: 1, backgroundColor: RivalColors.surfaceContainer, borderRadius: RivalRadius.DEFAULT, paddingHorizontal: 14, paddingVertical: 12, color: RivalColors.textPrimary, fontSize: 15, fontWeight: '600', borderWidth: 1, borderColor: RivalColors.accentFill },
-  usernameAt: { fontSize: 18, fontWeight: '700', color: RivalColors.textSecondary },
   saveChip: { backgroundColor: RivalColors.accentFill, paddingHorizontal: 14, paddingVertical: 10, borderRadius: RivalRadius.DEFAULT },
   saveChipText: { color: RivalColors.onAccentFill, fontWeight: '700', fontSize: 14 },
   cancelText: { color: RivalColors.textSecondary, fontSize: 14 },
   errorText: { fontSize: 12, color: RivalColors.error },
 
   bioInput: { backgroundColor: RivalColors.surfaceContainer, borderRadius: RivalRadius.DEFAULT, paddingHorizontal: 14, paddingVertical: 12, color: RivalColors.onSurface, fontSize: 15, minHeight: 84, textAlignVertical: 'top' },
-  bioFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  bioHint: { fontSize: 11, color: RivalColors.outline, flex: 1 },
-  bioCount: { fontSize: 11, color: RivalColors.textSecondary },
+  // `alignItems: center` vertically centred a two-line hint against a
+  // one-line counter, so on a narrow screen the count sat across the hint's
+  // second line. Top-align them and give the counter its own gutter.
+  bioFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginTop: 6 },
+  bioHint: { fontSize: 11, color: RivalColors.outline, flex: 1, lineHeight: 15 },
+  bioCount: { fontSize: 11, color: RivalColors.textSecondary, lineHeight: 15, flexShrink: 0 },
   bioSaveRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 14, marginTop: 4 },
 
   subSection: { marginTop: 20, gap: 4 },
@@ -852,13 +815,18 @@ const styles = StyleSheet.create({
   appIcon: { fontSize: 24 },
   appName: { fontSize: 15, fontWeight: '700', color: RivalColors.textPrimary },
   appStatus: { fontSize: 12, color: RivalColors.textSecondary, marginTop: 2 },
-  connectedBadge: { backgroundColor: `${RivalColors.tertiary}22`, borderRadius: RivalRadius.full, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: `${RivalColors.tertiary}55` },
-  connectedBadgeText: { color: RivalColors.tertiary, fontSize: 12, fontWeight: '700' },
+  connectedCheck: {
+    width: 28, height: 28, borderRadius: RivalRadius.full,
+    backgroundColor: `${RivalColors.tertiary}22`, borderWidth: 1, borderColor: `${RivalColors.tertiary}55`,
+    alignItems: 'center', justifyContent: 'center',
+  },
   appConnectBtn: { paddingHorizontal: 20 },
   comingSoonRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: RivalColors.surfaceLowest, borderRadius: RivalRadius.DEFAULT, padding: 14, marginTop: 10, opacity: 0.7 },
   actionBtn: { marginTop: 10 },
   disconnectConfirmCard: { marginTop: 10, gap: 10, alignItems: 'center' },
   disconnectConfirmBtn: { width: '100%' },
+  disconnectDestructiveBtn: { borderWidth: 1.5, borderColor: RivalColors.error },
+  disconnectCancelBtn: { paddingVertical: 10, paddingHorizontal: 20 },
   disconnectConfirmTitle: { color: RivalColors.textPrimary, fontSize: 15, fontWeight: '700', textAlign: 'center' },
   disconnectConfirmSub: { color: RivalColors.textSecondary, fontSize: 13, textAlign: 'center', lineHeight: 18 },
 

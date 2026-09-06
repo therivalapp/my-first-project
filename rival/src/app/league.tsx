@@ -15,7 +15,7 @@ import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 import { ACTIVITY_ICONS } from '../constants/activityIcons';
 import { formatDuration } from '../lib/format';
 import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone } from '../lib/activityInsights';
-import { RivalIcon, RivalFixedBackground, RivalTopNav, RivalProgressBar, RivalAvatar } from '../components/rival';
+import { RivalIcon, RivalFixedBackground, RivalTopNav, RivalProgressBar, RivalAvatar, RivalBackButton, RivalDateField } from '../components/rival';
 import Svg, { Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
 
 const INSIGHT_ICON: Record<InsightTone, 'trophy' | 'fire' | 'trendUp'> = {
@@ -78,7 +78,7 @@ function todayLocalStr(): string {
 type Member = {
   user_id: string;
   role: string;
-  users: { email: string; display_name: string | null; avatar_url: string | null; username: string | null; display_style: string | null };
+  users: { email: string; display_name: string | null; avatar_url: string | null };
   total_score: number;
   last_week_score: number;
   all_time_xp: number;
@@ -183,7 +183,7 @@ const paceCardWeb =
     ? ({ backgroundImage: 'linear-gradient(135deg, rgba(217,119,87,0.16), rgba(217,119,87,0.05))' } as any)
     : null;
 
-// Same SVG-ring technique as design-preview-team-hub-v3.tsx — a stroked
+// Same SVG-ring technique as the Team Hub challenge ring — a stroked
 // circle, transform applied only to the Svg element itself so it can't leak
 // onto sibling content.
 function TeamChallengeRing({ pct, value, unit, size = 176, thickness = 13 }: { pct: number; value: number; unit: string; size?: number; thickness?: number }) {
@@ -453,7 +453,7 @@ export default function LeagueScreen() {
 
     const { data: membersData } = await supabase
       .from('league_members')
-      .select('user_id, role, personal_goal, users(email, display_name, avatar_url, username, display_style)')
+      .select('user_id, role, personal_goal, users(display_name, avatar_url)')
       .eq('league_id', id)
       .eq('status', 'active');
 
@@ -670,7 +670,7 @@ export default function LeagueScreen() {
   async function loadWeekScores() {
     const { data: membersData } = await supabase
       .from('league_members')
-      .select('user_id, role, personal_goal, users(email, display_name, avatar_url, username, display_style)')
+      .select('user_id, role, personal_goal, users(display_name, avatar_url)')
       .eq('league_id', id)
       .eq('status', 'active');
     if (membersData) await scoreMembers(membersData, weekOffset);
@@ -1586,9 +1586,7 @@ export default function LeagueScreen() {
               no single hardcoded destination is right for all of them. Falls
               back to the Teams tab rather than Today — this screen belongs to
               that section. */}
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/team-feed'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/team-feed'))} color={RivalColors.accentFill} />
           {isAdmin && (
             <TouchableOpacity onPress={() => router.push({ pathname: '/league-settings', params: { id } })}>
               <Text style={styles.settingsLink}>⚙️ Settings</Text>
@@ -1800,14 +1798,7 @@ export default function LeagueScreen() {
               keyboardType="numeric"
             />
             <Text style={styles.composerLabel}>Target date</Text>
-            <TextInput
-              style={styles.composerInput}
-              value={goalDateDraft}
-              onChangeText={setGoalDateDraft}
-              placeholder="DD/MM/YYYY"
-              placeholderTextColor="#555"
-              keyboardType="numbers-and-punctuation"
-            />
+            <RivalDateField value={goalDateDraft} onChangeText={setGoalDateDraft} inputStyle={styles.composerInput} />
             <View style={styles.editModalButtons}>
               <TouchableOpacity style={styles.editCancelButton} onPress={() => setShowGoalComposer(false)}>
                 <Text style={styles.editCancelButtonText}>Cancel</Text>
@@ -2266,7 +2257,7 @@ export default function LeagueScreen() {
                 <View style={styles.composerRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.composerLabel}>Date</Text>
-                    <TextInput style={styles.composerInput} value={sessionDate} onChangeText={setSessionDate} placeholder="DD/MM/YYYY" placeholderTextColor="#555" keyboardType="numbers-and-punctuation" />
+                    <RivalDateField value={sessionDate} onChangeText={setSessionDate} inputStyle={styles.composerInput} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.composerLabel}>Time</Text>
@@ -2446,7 +2437,7 @@ export default function LeagueScreen() {
                   <View style={styles.composerRow}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.composerLabel}>Date</Text>
-                      <TextInput style={styles.composerInput} value={sessionDate} onChangeText={setSessionDate} placeholder="DD/MM/YYYY" placeholderTextColor="#555" keyboardType="numbers-and-punctuation" />
+                      <RivalDateField value={sessionDate} onChangeText={setSessionDate} inputStyle={styles.composerInput} />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.composerLabel}>Time</Text>

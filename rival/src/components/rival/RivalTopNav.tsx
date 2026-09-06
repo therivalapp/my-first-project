@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useIsFocused } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { getLevel } from '../../lib/xp';
 import { getSeasonStartISO } from '../../lib/season';
@@ -33,6 +33,17 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
   // cluster instead of sitting in genuine empty space. Drop to a second in-flow
   // row instead of overlapping text on top of text.
   const narrow = width < BREAKPOINT_MOBILE_NAV;
+  // react-native-screens (web) hides an inactive screen with `display:none`
+  // rather than unmounting it, so a signed-out or navigated-away screen's
+  // RivalTopNav instance keeps running. That's invisible for everything
+  // inline in this component's own tree, but the bottom pill below is
+  // portaled straight to document.body (see bottomNavPortalTarget) to escape
+  // iOS Safari's nested-scroll position:fixed bug — which means it's NOT a
+  // descendant of the hidden screen wrapper, so display:none never hides it.
+  // Gating the portal on focus is what actually hides it when its screen
+  // isn't the active one (e.g. it was still showing over the sign-out
+  // welcome screen, which renders no RivalTopNav of its own at all).
+  const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   // Keyboard-only offset. When the software keyboard opens, visualViewport
   // shrinks below the layout viewport and this keeps the pill above it.
@@ -174,6 +185,7 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
   // it doesn't. Desktop has no bottom pill (narrow-only), so hideBar means no
   // nav chrome at all there; acceptable since this app is mobile-first.
   if (hideBar) {
+    if (!isFocused) return null;
     return narrow ? (bottomNavPortalTarget ? createPortal(bottomNav, bottomNavPortalTarget) : bottomNav) : null;
   }
 
@@ -215,7 +227,7 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
           </View>
         ) : null}
 
-        <View style={[styles.right, narrow && !!centerSlot && styles.rightBalanced]}>
+        <View style={[styles.right, narrow && styles.rightNarrow, narrow && !!centerSlot && styles.rightBalanced]}>
           {/* RANK badge is desktop-only on this bar — mobile shows the same
               rank name inside the Today screen's own Legacy section instead,
               so it doesn't fight the center slot for space here. */}
@@ -323,14 +335,11 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
                   <RivalIcon name="person" size={16} color={RivalColors.accentText} />
                   <Text style={styles.avatarMenuText}>Profile</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.avatarMenuItem, hoveredItem === 'friends' && styles.avatarMenuItemHovered]}
-                  onPress={() => { setMenuOpen(false); router.push('/friends'); }}
-                  {...(Platform.OS === 'web' ? { onMouseEnter: () => setHoveredItem('friends'), onMouseLeave: () => setHoveredItem(null) } as any : {})}
-                >
-                  <RivalIcon name="groups" size={16} color={RivalColors.accentText} />
-                  <Text style={styles.avatarMenuText}>Friends</Text>
-                </TouchableOpacity>
+                {/* No Friends entry: RIVAL's social unit is the Team. A one-way
+                    follow makes an audience, not a training partner — and the
+                    thing that gets someone out the door is people who notice
+                    when you don't. friends.tsx and the follows table are left
+                    in place so this is one line to undo. */}
                 <TouchableOpacity
                   style={[styles.avatarMenuItem, hoveredItem === 'settings' && styles.avatarMenuItemHovered]}
                   onPress={() => { setMenuOpen(false); router.push('/profile?tab=account'); }}
@@ -353,7 +362,7 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
           </View>
         </View>
       </View>
-      {narrow && (bottomNavPortalTarget ? createPortal(bottomNav, bottomNavPortalTarget) : bottomNav)}
+      {narrow && isFocused && (bottomNavPortalTarget ? createPortal(bottomNav, bottomNavPortalTarget) : bottomNav)}
     </View>
   );
 }
@@ -444,7 +453,7 @@ const styles = StyleSheet.create({
     // unaffected (it paints outside the border box regardless of overflow).
     overflow: 'hidden',
     ...(Platform.OS === 'web'
-      ? { backdropFilter: 'blur(20px)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', transition: 'transform 0.22s ease, opacity 0.22s ease' } as any
+      ? { backdropFilter: 'blur(20px)', transition: 'transform 0.22s ease, opacity 0.22s ease' } as any
       : {}),
   },
   // Instagram-style shrink while scrolling down — scales the whole pill down
@@ -466,6 +475,9 @@ const styles = StyleSheet.create({
   link: { ...RivalType.bodyMd, fontSize: 13, letterSpacing: 0.6, fontWeight: '400', color: RivalColors.textSecondary },
   linkActive: { color: RivalColors.textPrimary, fontWeight: '600' },
   right: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  // Mobile only (current scope is mobile-only) — tighter than desktop's 12,
+  // Ricky wanted the chat/bell icons sitting closer to the avatar.
+  rightNarrow: { gap: 6 },
   rankBadge: { alignItems: 'flex-end' },
   rankLabel: { ...RivalType.labelCaps, fontSize: 9, color: RivalColors.textSecondary },
   rankValue: { fontSize: 14, fontWeight: '700' },

@@ -32,7 +32,7 @@ const TYPE_NOUN: Record<string, string> = {
   Run: 'run', VirtualRun: 'run', Ride: 'ride', VirtualRide: 'ride',
   Swim: 'swim', Rowing: 'row', Walk: 'walk', Hike: 'hike',
   WeightTraining: 'lift', Workout: 'session', CrossFit: 'CrossFit session',
-  Hyrox: 'Hyrox', HIIT: 'HIIT session', Yoga: 'yoga session',
+  Hyrox: 'Hyrox', HIIT: 'HIIT session', Bootcamp: 'bootcamp', Yoga: 'yoga session',
   AlpineSki: 'ski', NordicSki: 'ski',
 };
 

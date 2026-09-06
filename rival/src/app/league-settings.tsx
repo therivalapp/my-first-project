@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalIcon, RivalBackButton} from '../components/rival';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform } from 'react-native';
-import { notify } from '../lib/notify';
+import { confirmAction, notify } from '../lib/notify';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../lib/supabase';
@@ -32,8 +33,6 @@ type Member = {
   users: {
     display_name: string | null;
     email: string;
-    username: string | null;
-    display_style: string | null;
   };
 };
 
@@ -99,7 +98,7 @@ export default function LeagueSettingsScreen() {
 
     const { data: membersData } = await supabase
       .from('league_members')
-      .select('user_id, role, users(display_name, email, username, display_style)')
+      .select('user_id, role, users(display_name)')
       .eq('league_id', id)
       .eq('status', 'active');
 
@@ -107,7 +106,7 @@ export default function LeagueSettingsScreen() {
 
     const { data: pendingData } = await supabase
       .from('league_members')
-      .select('user_id, role, users(display_name, email, username, display_style)')
+      .select('user_id, role, users(display_name)')
       .eq('league_id', id)
       .eq('status', 'pending');
 
@@ -195,9 +194,7 @@ export default function LeagueSettingsScreen() {
     const member = members.find((m) => m.user_id === userId);
     const name = member?.users ? formatDisplayName(member.users, 'this member') : 'this member';
 
-    if (Platform.OS === 'web') {
-      if (!window.confirm(`Remove ${name} from the team?`)) return;
-    }
+    if (!(await confirmAction({ title: `Remove ${name} from the team?`, confirmLabel: 'Remove', destructive: true }))) return;
 
     const { error } = await supabase
       .from('league_members')
@@ -248,9 +245,7 @@ export default function LeagueSettingsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace({ pathname: '/team-hub', params: { id } }))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace({ pathname: '/team-hub', params: { id } }))} color={RivalColors.accentFill} />
         </View>
 
         <Text style={styles.title}>Team Settings</Text>

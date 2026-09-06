@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { RivalColors } from '../constants/rivalTheme';
+import { RivalIcon, RivalBackButton} from '../components/rival';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -53,9 +54,7 @@ export default function JoinLeagueScreen() {
       <View style={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
         </View>
 
         <Text style={styles.title}>Join a Team</Text>

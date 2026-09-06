@@ -8,6 +8,7 @@ import { formatDuration, formatDurationClock } from '../lib/format';
 import { calculateStreak } from '../lib/streak';
 import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { computeActivityInsight, InsightTone } from '../lib/activityInsights';
+import { loadScoringConfig, DEFAULT_MULTIPLIER, ScoringConfig } from '../lib/effort';
 import { RivalTopNav, RivalIcon, activityIconName, RivalFixedBackground, ActivityDiaryViewer, DiaryActivity, PhotoPositioner, CoverImage } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RivalSerifFamily } from '../constants/rivalTheme';
 import { BREAKPOINT_TWO_UP_GRID, BREAKPOINT_SPACIOUS_GALLERY, BREAKPOINT_MOBILE_NAV } from '../constants/breakpoints';
@@ -86,12 +87,9 @@ const PB_BADGE_OFFSET = 35;
 // of layout so the insight row doesn't get pushed down and chase it.
 const INSIGHT_ROW_OVERHANG = 44;
 
-const EFFORT_MULTIPLIERS: Record<string, number> = {
-  Run: 1.2, Ride: 1.0, Swim: 1.5, WeightTraining: 0.8, Workout: 0.8,
-  Hike: 0.7, Walk: 0.5, Yoga: 0.5, CrossFit: 1.3, AlpineSki: 0.9,
-  NordicSki: 1.2, Kayaking: 0.8, Rowing: 1.1, StandUpPaddling: 0.7,
-  Surfing: 0.7, VirtualRide: 0.9, VirtualRun: 1.1, Hyrox: 1.4, HIIT: 1.1,
-};
+// The ×N badge reads from scoring_config, the same source the score itself
+// uses. It used to be a hardcoded table here, which drifted: it claimed Swim
+// was ×1.5 long after Swim was scoring ×1.2 — the app misreporting its own maths.
 
 const INSIGHT_ICON: Record<InsightTone, 'trophy' | 'fire' | 'trendUp'> = {
   record: 'trophy',
@@ -295,6 +293,7 @@ export default function MyActivitiesScreen() {
   // forwarded to the DOM by react-native-web, so we render our own popup.
   const [hoveredMultiplierId, setHoveredMultiplierId] = useState<string | null>(null);
   const [hoveredToolbarBtn, setHoveredToolbarBtn] = useState<string | null>(null);
+  const [scoringConfig, setScoringConfig] = useState<ScoringConfig | null>(null);
 
   const [filterType, setFilterType] = useState('All');
   const [sortOrder, setSortOrder] = useState<'latest' | 'oldest'>('latest');
@@ -354,6 +353,13 @@ export default function MyActivitiesScreen() {
   useEffect(() => {
     if (journalLayout === 'month') hasScrolledMonthPager.current = false;
   }, [journalLayout]);
+
+  // Scoring config is small, cached in effort.ts, and only feeds the ×N badge,
+  // so a failure here just falls back to DEFAULT_MULTIPLIER rather than
+  // blocking the page.
+  useEffect(() => {
+    loadScoringConfig().then(setScoringConfig).catch(() => {});
+  }, []);
   // Measured width of the calendar's 7-column grid (post-padding), used to
   // size each day cell exactly. `width: '13%'` per cell (91%) plus the row's
   // 6px gaps (36px across 7 columns) used to overflow the container by a few
@@ -1861,7 +1867,7 @@ export default function MyActivitiesScreen() {
               {group.activities.map((activity) => {
                 const distance = formatDistance(activity.distance_meters, activity.activity_type);
                 const pace = formatPace(activity.distance_meters, activity.duration_seconds, activity.activity_type);
-                const multiplier = EFFORT_MULTIPLIERS[activity.activity_type] ?? 0.8;
+                const multiplier = scoringConfig?.multipliers[activity.activity_type] ?? DEFAULT_MULTIPLIER;
                 const pbLabel = pbs[activity.id];
                 const isUploading = uploading === activity.id;
                 const insight = computeActivityInsight(activity, allActivities, !!pbLabel);

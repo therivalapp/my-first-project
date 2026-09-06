@@ -4,10 +4,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../lib/supabase';
-import { calculateEffortScore, loadScoringMultipliers } from '../lib/effort';
+import { calculateEffortScore, loadScoringConfig } from '../lib/effort';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { findMatchingRaceId } from '../lib/raceMatch';
 import { RivalColors, RivalRadius } from '../constants/rivalTheme';
+import { RivalIcon, RivalBackButton, RivalDateField } from '../components/rival';
 
 type ExtractedWorkout = {
   workoutType: string;
@@ -33,13 +34,14 @@ const TYPE_OPTIONS: Array<{ type: string; icon: string }> = [
   { type: 'WeightTraining', icon: '🏋️' },
   { type: 'CrossFit', icon: '🤸' },
   { type: 'Hyrox', icon: '🔥' },
+  { type: 'Bootcamp', icon: '🎽' },
   { type: 'HIIT', icon: '⚡' },
   { type: 'Workout', icon: '💪' },
 ];
 
 // Class-based formats are almost always a full ~45-60min session even though the
 // scanned WOD/board only shows the timed portion (e.g. a 15min WOD inside an hour class).
-const CLASS_BASED_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT']);
+const CLASS_BASED_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT', 'Bootcamp']);
 const CLASS_DURATION_FLOOR_SECONDS = 45 * 60;
 
 export const CANONICAL_LIFTS = [
@@ -178,7 +180,13 @@ export default function ScanWorkoutScreen() {
   const [extractedWorkout, setExtractedWorkout] = useState<ExtractedWorkout | null>(null);
   const [userNotes, setUserNotes] = useState('');
   const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Split the same way manual-entry.tsx's form is — name/date map to a
+  // visible field and render right under it; everything else (capture
+  // permission, AI read failures, save failures) is a whole-flow problem
+  // shown near the action that triggered it, not a banner pinned over
+  // content unrelated to the error.
+  const [fieldError, setFieldError] = useState<{ field: 'name' | 'date'; message: string } | null>(null);
+  const [generalError, setGeneralError] = useState<string | null>(null);
   const [mediaErrorMsg, setMediaErrorMsg] = useState<string | null>(null);
   // Decoupled from extractedWorkout.distance (a number) so typing "42." doesn't
   // immediately snap back to "42" — Number("42.") === 42, and a controlled input
@@ -207,10 +215,10 @@ export default function ScanWorkoutScreen() {
   }, [extractedWorkout?.duration]);
 
   useEffect(() => {
-    if (!errorMsg) return;
-    const t = setTimeout(() => setErrorMsg(null), 5000);
+    if (!generalError) return;
+    const t = setTimeout(() => setGeneralError(null), 5000);
     return () => clearTimeout(t);
-  }, [errorMsg]);
+  }, [generalError]);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [savedActivityId, setSavedActivityId] = useState<string | null>(null);
   const [savedHasPhoto, setSavedHasPhoto] = useState(false);
@@ -251,7 +259,7 @@ export default function ScanWorkoutScreen() {
         .single();
       setLoadingEdit(false);
       if (error || !activity) {
-        setErrorMsg('Could not load that activity to edit');
+        setGeneralError('Could not load that activity to edit');
         return;
       }
       setEditActivityId(activity.id);
@@ -307,7 +315,8 @@ export default function ScanWorkoutScreen() {
     setExtractedWorkout(null);
     setWorkoutName('');
     setUserNotes('');
-    setErrorMsg(null);
+    setFieldError(null);
+    setGeneralError(null);
     setSuccessMsg(null);
     setActivityDateStr(isoToDisplayDate(todayLocalStr()));
     setEditActivityId(null);
@@ -370,7 +379,7 @@ export default function ScanWorkoutScreen() {
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permission.granted) {
-      setErrorMsg(source === 'camera' ? 'Camera access is needed to take a photo' : 'Photo library access is needed to upload a photo');
+      setGeneralError(source === 'camera' ? 'Camera access is needed to take a photo' : 'Photo library access is needed to upload a photo');
       return;
     }
 
@@ -394,7 +403,7 @@ export default function ScanWorkoutScreen() {
     if (imagesForAnalysis.length > 0) {
       await analyzeImages(imagesForAnalysis);
     } else {
-      setErrorMsg('Could not read the photo. Try again.');
+      setGeneralError('Could not read the photo. Try again.');
     }
   }
 
@@ -496,7 +505,7 @@ export default function ScanWorkoutScreen() {
 
   async function analyzeImages(images: Array<{ base64Image: string; mediaType: string }>) {
     setAnalyzing(true);
-    setErrorMsg(null);
+    setGeneralError(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
@@ -514,7 +523,7 @@ export default function ScanWorkoutScreen() {
       const data = await response.json();
 
       if (!response.ok || !data.workout) {
-        setErrorMsg(data.error || 'Could not read the workout image. Try a clearer photo.');
+        setGeneralError(data.error || 'Could not read the workout image. Try a clearer photo.');
         return;
       }
 
@@ -531,7 +540,7 @@ export default function ScanWorkoutScreen() {
       setWorkoutName(data.workout.workoutType || 'Workout');
     } catch (err) {
       console.error('Analysis failed:', err);
-      setErrorMsg('Could not read the workout image. Try a clearer photo.');
+      setGeneralError('Could not read the workout image. Try a clearer photo.');
     } finally {
       setAnalyzing(false);
     }
@@ -649,12 +658,13 @@ export default function ScanWorkoutScreen() {
 
   async function saveWorkout() {
     if (!extractedWorkout || !workoutName?.trim()) {
-      setErrorMsg('Please enter a workout name');
+      setFieldError({ field: 'name', message: 'Please enter a workout name' });
       return;
     }
 
     setLoading(true);
-    setErrorMsg(null);
+    setFieldError(null);
+    setGeneralError(null);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -663,14 +673,13 @@ export default function ScanWorkoutScreen() {
       const effortScore = calculateEffortScore(
         extractedWorkout.workoutType,
         extractedWorkout.duration,
-        extractedWorkout.distance || 0,
-        await loadScoringMultipliers(),
-        extractedWorkout.intensity
+        extractedWorkout.elevation || 0,
+        await loadScoringConfig(),
       );
 
       const isoDate = displayToIsoDate(activityDateStr);
       if (!isoDate) {
-        setErrorMsg('Please enter the date as DD/MM/YYYY');
+        setFieldError({ field: 'date', message: 'Enter a valid date' });
         setLoading(false);
         return;
       }
@@ -703,9 +712,11 @@ export default function ScanWorkoutScreen() {
       if (editActivityId) {
         const { error } = await supabase.from('activities').update(activityPayload).eq('id', editActivityId);
         if (error) {
-          setErrorMsg(error.message.includes('activities_started_at_not_future')
-            ? "That date is in the future — activities can't be logged ahead of time."
-            : `Save failed: ${error.message}`);
+          if (error.message.includes('activities_started_at_not_future')) {
+            setFieldError({ field: 'date', message: "That's in the future — activities can't be logged ahead of time." });
+          } else {
+            setGeneralError(`Save failed: ${error.message}`);
+          }
           return;
         }
         activityId = editActivityId;
@@ -714,7 +725,7 @@ export default function ScanWorkoutScreen() {
         // rather than press on.
         const { error: clearErr } = await supabase.from('exercise_entries').delete().eq('activity_id', activityId);
         if (clearErr) {
-          setErrorMsg(`Couldn't update your lifts: ${clearErr.message}`);
+          setGeneralError(`Couldn't update your lifts: ${clearErr.message}`);
           return;
         }
       } else {
@@ -725,9 +736,11 @@ export default function ScanWorkoutScreen() {
           .single();
 
         if (error || !inserted) {
-          setErrorMsg(error?.message?.includes('activities_started_at_not_future')
-            ? "That date is in the future — activities can't be logged ahead of time."
-            : `Save failed: ${error?.message ?? 'unknown error'}`);
+          if (error?.message?.includes('activities_started_at_not_future')) {
+            setFieldError({ field: 'date', message: "That's in the future — activities can't be logged ahead of time." });
+          } else {
+            setGeneralError(`Save failed: ${error?.message ?? 'unknown error'}`);
+          }
           return;
         }
         activityId = inserted.id;
@@ -753,7 +766,7 @@ export default function ScanWorkoutScreen() {
         // The activity itself is already saved, so this is reported rather than
         // fatal -- but silently dropping the lifts would leave the PR tracker
         // quietly wrong.
-        if (liftErr) setErrorMsg(`Workout saved, but the lifts didn't attach: ${liftErr.message}`);
+        if (liftErr) setGeneralError(`Workout saved, but the lifts didn't attach: ${liftErr.message}`);
       }
 
       // Only photos/videos added in the "Photos & Videos" section get stored and shown
@@ -790,7 +803,7 @@ export default function ScanWorkoutScreen() {
 
       if (firstPhotoUrl) {
         const { error: coverErr } = await supabase.from('activities').update({ photo_url: firstPhotoUrl }).eq('id', activityId);
-        if (coverErr) setErrorMsg(`Workout saved, but the cover photo didn't set: ${coverErr.message}`);
+        if (coverErr) setGeneralError(`Workout saved, but the cover photo didn't set: ${coverErr.message}`);
       }
 
       setSuccessMsg(`${workoutName} saved with ${Math.round(effortScore)} Effort!`);
@@ -807,7 +820,7 @@ export default function ScanWorkoutScreen() {
       if (!firstPhotoUrl) setTimeout(() => router.replace('/my-activities'), 1200);
     } catch (err) {
       console.error('Save failed:', err);
-      setErrorMsg('Failed to save workout');
+      setGeneralError('Failed to save workout');
     } finally {
       setLoading(false);
     }
@@ -825,17 +838,10 @@ export default function ScanWorkoutScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {errorMsg && (
-        <TouchableOpacity style={styles.floatingErrorBar} onPress={() => setErrorMsg(null)}>
-          <Text style={styles.floatingErrorText}>⚠️ {errorMsg}</Text>
-        </TouchableOpacity>
-      )}
       <ScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))}>
-            <Text style={styles.back}>← Back</Text>
-          </TouchableOpacity>
+          <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))} color={RivalColors.accentFill} />
         </View>
 
         <Text style={styles.title}>{editActivityId ? 'Edit Activity' : 'Scan Workout'}</Text>
@@ -892,6 +898,7 @@ export default function ScanWorkoutScreen() {
                 <Text style={styles.uploadBtnText}>📁 Upload</Text>
               </TouchableOpacity>
             </View>
+            {generalError && <Text style={styles.fieldError}>⚠️ {generalError}</Text>}
 
             <TouchableOpacity style={styles.manualEntryBtn} onPress={() => router.push('/manual-entry')}>
               <Text style={styles.manualEntryBtnText}>✏️ Enter Workout Manually</Text>
@@ -1201,22 +1208,21 @@ export default function ScanWorkoutScreen() {
                   <TextInput
                     style={styles.nameInput}
                     value={workoutName}
-                    onChangeText={setWorkoutName}
+                    onChangeText={(v) => { setWorkoutName(v); if (fieldError?.field === 'name') setFieldError(null); }}
                     placeholder="e.g., Pemby Pounder, CrossFit Comp, Mountain Run"
                     placeholderTextColor={RivalColors.textSecondary}
                   />
+                  {fieldError?.field === 'name' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
                 </View>
 
                 <View style={styles.nameInputBox}>
-                  <Text style={styles.nameLabel}>Date (DD/MM/YYYY)</Text>
-                  <TextInput
-                    style={styles.nameInput}
+                  <Text style={styles.nameLabel}>Date</Text>
+                  <RivalDateField
                     value={activityDateStr}
-                    onChangeText={setActivityDateStr}
-                    placeholder="18/10/2026"
-                    placeholderTextColor={RivalColors.textSecondary}
-                    keyboardType="numbers-and-punctuation"
+                    onChangeText={(v) => { setActivityDateStr(v); if (fieldError?.field === 'date') setFieldError(null); }}
+                    inputStyle={styles.nameInput}
                   />
+                  {fieldError?.field === 'date' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
                 </View>
 
                 <View style={styles.nameInputBox}>
@@ -1289,6 +1295,16 @@ export default function ScanWorkoutScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
+            ) : generalError ? (
+              // The AI read failed with nothing extracted — analyzing is false
+              // and extractedWorkout never got set, so without this the screen
+              // just went quiet with a photo on it and no visible reason why.
+              <View style={styles.loadingBox}>
+                <Text style={styles.fieldError}>⚠️ {generalError}</Text>
+                <TouchableOpacity style={styles.manualEntryBtn} onPress={() => pickImage('gallery')}>
+                  <Text style={styles.manualEntryBtnText}>Try a different photo</Text>
+                </TouchableOpacity>
+              </View>
             ) : null}
           </View>
         )}
@@ -1305,8 +1321,9 @@ const styles = StyleSheet.create({
   back: { color: RivalColors.accentText, fontSize: 16 },
   title: { fontSize: 32, fontWeight: '900', color: RivalColors.textPrimary, marginBottom: 32 },
   subtitle: { fontSize: 14, color: RivalColors.textSecondary, marginBottom: 16 },
-  floatingErrorBar: { position: 'absolute', top: 8, left: 12, right: 12, zIndex: 50, backgroundColor: RivalColors.errorContainer, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: RivalColors.error, shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
-  floatingErrorText: { color: RivalColors.error, fontSize: 13, fontWeight: '600' },
+  // Same recipe as manual-entry.tsx's fieldError — sits right under (or
+  // beside) whatever it's about, replacing the old fixed top banner.
+  fieldError: { color: RivalColors.error, fontSize: 12, fontWeight: '600' },
   successBanner: { backgroundColor: `${RivalColors.success}22`, borderRadius: 10, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: RivalColors.success },
   successBannerText: { color: RivalColors.success, fontSize: 13, fontWeight: '600' },
   enhanceCta: { marginTop: 12, gap: 8 },

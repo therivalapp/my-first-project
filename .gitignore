@@ -16,3 +16,18 @@
 # Editor/OS noise
 *.swp
 Thumbs.db
+
+# Vercel CLI local link (contains project/org ids, machine-specific)
+.vercel/
+
+# Stray build outputs. dist-before/ is a 17MB snapshot of a previous web build
+# kept for comparison — never a source artifact.
+rival/dist-before/
+dist-before/
+
+# npm lockfile at the repo ROOT: there is no root package.json, so this is a
+# stray from running npm outside rival/. The real lockfile is rival/package-lock.json.
+/package-lock.json
+
+# Session scratchpad — DB snapshots taken before migrations, local only.
+scratchpad/

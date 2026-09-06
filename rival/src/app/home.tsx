@@ -1,17 +1,24 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, ImageBackground, useWindowDimensions, RefreshControl } from 'react-native';
 import Svg, { Defs, LinearGradient, Polygon, Stop } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../lib/supabase';
+import { connectStrava } from '../lib/strava';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { notify } from '../lib/notify';
 import { getMondayOfWeek, calculateStreak } from '../lib/streak';
 import { getCurrentSeasonYear, daysUntilSeasonEnd, getSeasonStartISO } from '../lib/season';
 import { getLevel } from '../lib/xp';
 import { computeGoalProgress, goalUnit, GoalRow } from '../lib/goalProgress';
-import { formatTeamName } from '../lib/identity';
-import { RivalButton, RivalCard, RivalProgressBar, RivalIcon, RivalTopNav } from '../components/rival';
+// Same set as my-activities.tsx/team-hub.tsx's METERS_SPORTS — those short
+// distances read as near-zero once rounded to km ("0.7km" is really "700m").
+// Distance goals always store/compute progress and target in km regardless
+// of activity (goalUnit() is unconditional), so the Focus card converts back
+// to metres at display time only, for these activity types only.
+const METERS_SPORTS = new Set(['Swim', 'Rowing']);
+import { formatTeamName, formatRaceName } from '../lib/identity';
+import { RivalButton, RivalCard, RivalProgressBar, RivalChallengeRing, RivalIcon, RivalTopNav } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RivalFontFamily, RivalSerifFamily } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
@@ -37,9 +44,9 @@ type MomentumContent = { message: string; cta: string };
 // a different size than the surrounding words — gap is null when there's
 // simply no rival yet (leading with nobody else on the board).
 type RankStory = { rankIcon: 'crown' | 'medal' | null; rankLabel: string | null; before: string; gap: number | null; after: string };
-// First name + last initial (e.g. "Ricky J.") — same shape as identity.ts's
-// first_last_initial style, just always applied here regardless of the
-// user's chosen display_style, since a leaderboard needs real names.
+// First name + last initial (e.g. "Ricky J.") — kept short for the pillar's
+// tight width, not a general display-name style (there's no such concept
+// anymore; identity.ts always returns the real name everywhere else).
 function weeklyLeaderName(profile: { display_name?: string | null; email?: string | null } | undefined): string {
   const raw = profile?.display_name || profile?.email?.split('@')[0] || 'Athlete';
   const parts = raw.trim().split(/\s+/);
@@ -482,6 +489,7 @@ export default function HomeScreen() {
   // (desktop Focus card, Momentum status line) is unaffected.
   const [weeklyLeaders, setWeeklyLeaders] = useState<WeeklyLeader[]>([]);
   const [leaderCardIndex, setLeaderCardIndex] = useState(0);
+  const leaderScrollRef = useRef<ScrollView>(null);
   const weeklyLeader = weeklyLeaders[0] ?? null;
   const [momentumTrainers, setMomentumTrainers] = useState<MomentumTrainers | null>(null);
   const [nextRace, setNextRace] = useState<NextRace>({ name: 'Auckland Marathon', race_date: '2026-10-25' });
@@ -586,13 +594,15 @@ export default function HomeScreen() {
       .sort((a, b) => (b.goal.pinned ? 1 : 0) - (a.goal.pinned ? 1 : 0) || a.endMs - b.endMs || b.pct - a.pct);
     if (activeGoals.length > 0) {
       const top = activeGoals[0];
+      const unit = goalUnit(top.goal.goal_type);
+      const useMeters = unit === 'km' && top.goal.activity_filter != null && METERS_SPORTS.has(top.goal.activity_filter);
       setFeaturedGoal({
         id: top.goal.id,
         title: featuredGoalTitle(top.goal),
         activityLabel: top.goal.goal_type === 'gym_sessions' ? 'Gym Sessions' : (top.goal.activity_filter ?? 'All Activities'),
-        progress: top.progress,
-        target: top.goal.target_value,
-        unit: goalUnit(top.goal.goal_type),
+        progress: useMeters ? Math.round(top.progress * 1000) : top.progress,
+        target: useMeters ? Math.round(top.goal.target_value * 1000) : top.goal.target_value,
+        unit: useMeters ? 'm' : unit,
         pct: top.pct,
         daysLeft: Math.max(0, Math.ceil((top.endMs - now.getTime()) / (1000 * 60 * 60 * 24))),
       });
@@ -661,7 +671,7 @@ export default function HomeScreen() {
       if (trainerIds.length > 0) {
         const { data: trainerProfiles } = await supabase
           .from('users')
-          .select('id, display_name, email')
+          .select('id, display_name')
           .in('id', trainerIds);
         const trainerProfileById: Record<string, any> = {};
         (trainerProfiles || []).forEach((p: any) => { trainerProfileById[p.id] = p; });
@@ -721,7 +731,7 @@ export default function HomeScreen() {
         if (everyRankedId.size > 0) {
           const { data: profiles } = await supabase
             .from('users')
-            .select('id, display_name, avatar_url, email')
+            .select('id, display_name, avatar_url')
             .in('id', Array.from(everyRankedId));
           (profiles || []).forEach((p: any) => { profileById[p.id] = p; });
         }
@@ -729,10 +739,7 @@ export default function HomeScreen() {
         for (const league of leagueListWithCounts) {
           const rankedIds = rankedByLeague[league.id];
           if (!rankedIds) continue;
-          // First name + last initial always, regardless of the user's chosen
-          // display style (e.g. username_only) — a leaderboard reads better
-          // with names than handles, unlike league.tsx's member list which
-          // respects that preference.
+          // First name + last initial, always — see weeklyLeaderName above.
           const standings: WeeklyLeaderEntry[] = rankedIds.map((id) => ({
             userId: id,
             name: weeklyLeaderName(profileById[id]),
@@ -749,21 +756,8 @@ export default function HomeScreen() {
     }
   }
 
-  async function connectStrava() {
-    const clientId = process.env.EXPO_PUBLIC_STRAVA_CLIENT_ID;
-    const redirectUri = typeof window !== 'undefined'
-      ? `${window.location.origin}/strava-callback`
-      : process.env.EXPO_PUBLIC_STRAVA_REDIRECT_URI;
-    const { data: { session } } = await supabase.auth.getSession();
-    const stravaUrl = `https://www.strava.com/oauth/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=read,activity:read_all&state=${session?.access_token ?? ''}`;
-    if (Platform.OS === 'web') {
-      const popup = window.open(stravaUrl, 'strava-auth', 'width=600,height=700');
-      const interval = setInterval(() => {
-        try {
-          if (popup?.closed) { clearInterval(interval); loadAll(); }
-        } catch { clearInterval(interval); }
-      }, 500);
-    }
+  function handleConnectStrava() {
+    connectStrava(loadAll);
   }
 
   // The mockup's 4-card row must stay 4-across on desktop — explicit quarter
@@ -817,7 +811,20 @@ export default function HomeScreen() {
           centerSlot={mobile ? (
             <View style={{ alignItems: 'center' }}>
               <Text style={styles.mTimeEarnedLabel}>TOTAL TIME EARNED</Text>
-              <Text style={styles.mTimeEarnedValue} numberOfLines={1}>{heroTimeText}</Text>
+              {/* Split number/unit, same pattern as the Focus card's hero
+                  number — a single string in the serif italic style rendered
+                  "h"/"m" as oversized swash letters welded onto the digits
+                  instead of reading as units. */}
+              <Text numberOfLines={1}>
+                {heroHours > 0 && (
+                  <>
+                    <Text style={styles.mTimeEarnedValue}>{heroHours}</Text>
+                    <Text style={styles.mTimeEarnedUnit}>h </Text>
+                  </>
+                )}
+                <Text style={styles.mTimeEarnedValue}>{heroMins}</Text>
+                <Text style={styles.mTimeEarnedUnit}>m</Text>
+              </Text>
             </View>
           ) : undefined}
         />
@@ -861,22 +868,52 @@ export default function HomeScreen() {
                   resizeMode="cover"
                 />
                 {weeklyLeaders.length > 1 ? (
-                  <ScrollView
-                    horizontal
-                    pagingEnabled
-                    showsHorizontalScrollIndicator={false}
-                    style={{ width: windowWidth - 32 }}
-                    onMomentumScrollEnd={(e) => {
-                      const idx = Math.round(e.nativeEvent.contentOffset.x / (windowWidth - 32));
-                      setLeaderCardIndex(idx);
-                    }}
-                  >
-                    {weeklyLeaders.map((leader) => (
-                      <View key={leader.leagueId} style={{ width: windowWidth - 32, alignItems: 'center' }}>
-                        <WeeklyLeaderCardBody leader={leader} />
-                      </View>
-                    ))}
-                  </ScrollView>
+                  <>
+                    <ScrollView
+                      ref={leaderScrollRef}
+                      horizontal
+                      pagingEnabled
+                      showsHorizontalScrollIndicator={false}
+                      style={{ width: windowWidth - 32 }}
+                      onMomentumScrollEnd={(e) => {
+                        const idx = Math.round(e.nativeEvent.contentOffset.x / (windowWidth - 32));
+                        setLeaderCardIndex(idx);
+                      }}
+                    >
+                      {weeklyLeaders.map((leader) => (
+                        <View key={leader.leagueId} style={{ width: windowWidth - 32, alignItems: 'center' }}>
+                          <WeeklyLeaderCardBody leader={leader} />
+                        </View>
+                      ))}
+                    </ScrollView>
+                    {/* Swipe affordance — nothing else on this card hints that
+                        it pages across teams, so a first-time user with more
+                        than one team never discovers the other boards. Sits
+                        OUTSIDE the paging ScrollView (a sibling, absolutely
+                        positioned over the card) so the chevrons stay put
+                        while the podium slides underneath. Each one hides at
+                        its end of the run rather than sitting there dead, so
+                        the pair also reads as a position indicator. Tappable
+                        as well as decorative — same gesture, one less swipe. */}
+                    {[0, 1].map((side) => {
+                      const isLeft = side === 0;
+                      const target = leaderCardIndex + (isLeft ? -1 : 1);
+                      if (target < 0 || target > weeklyLeaders.length - 1) return null;
+                      return (
+                        <TouchableOpacity
+                          key={side}
+                          style={[styles.mLeaderArrow, isLeft ? styles.mLeaderArrowLeft : styles.mLeaderArrowRight]}
+                          hitSlop={{ top: 12, bottom: 12, left: 10, right: 10 }}
+                          onPress={() => {
+                            setLeaderCardIndex(target);
+                            leaderScrollRef.current?.scrollTo({ x: target * (windowWidth - 32), animated: true });
+                          }}
+                        >
+                          <RivalIcon name={isLeft ? 'monthBack' : 'monthForward'} size={26} color="rgba(255,181,158,0.55)" />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </>
                 ) : (
                   <WeeklyLeaderCardBody leader={weeklyLeaders[0] ?? null} />
                 )}
@@ -890,30 +927,33 @@ export default function HomeScreen() {
                 labelStyle={styles.mAddActivityLabel}
               />
 
-              {/* Focus card */}
-              <RivalCard style={styles.mFocusCard}>
-                <View style={styles.mFocusGlowTL} pointerEvents="none" />
-                <View style={styles.mFocusGlowBottom} pointerEvents="none" />
+              {/* Focus — no card chrome, same as the Team Challenge hero in
+                  team-hub.tsx: content sits directly on the page background
+                  rather than boxed in its own tinted card. */}
+              <View style={styles.mFocusFree}>
                 <Text style={styles.mFocusKicker}>FOCUS</Text>
                 {featuredGoal ? (
                   <>
                     <Text style={styles.mFocusTitle}>{featuredGoal.activityLabel}</Text>
-                    <View style={styles.mFocusHeroRow}>
-                      <Text style={styles.mFocusHeroNumber}>{featuredGoal.progress.toLocaleString()}</Text>
-                      <Text style={styles.mFocusHeroUnit}>/ {featuredGoal.target.toLocaleString()} {featuredGoal.unit}</Text>
+                    {/* Same ring used by the Team Challenge card (team-hub.tsx) —
+                        Ricky asked for this card to match it. RivalChallengeRing
+                        decides decimal-vs-whole-number display from the
+                        target's own magnitude (see its formatRingValue) —
+                        pass the raw progress, not a pre-rounded one. */}
+                    <RivalChallengeRing
+                      pct={featuredGoal.pct}
+                      value={featuredGoal.progress}
+                      target={featuredGoal.target}
+                      unit={`/ ${featuredGoal.target.toLocaleString()} ${featuredGoal.unit}`}
+                      size={200}
+                      thickness={14}
+                    />
+                    <View style={styles.mFocusRingMetaRow}>
+                      <Text style={styles.mFocusRingMeta}><Text style={styles.mFocusRingMetaBold}>{Math.round(featuredGoal.pct * 100)}%</Text> complete</Text>
+                      <Text style={styles.mFocusRingMeta}>
+                        <Text style={styles.mFocusRingMetaBold}>{featuredGoal.daysLeft}</Text> {featuredGoal.daysLeft === 1 ? 'day' : 'days'} left
+                      </Text>
                     </View>
-                    <View style={{ position: 'relative', width: '100%' }}>
-                      <RivalProgressBar
-                        pct={featuredGoal.pct}
-                        height={10}
-                        radius={5}
-                        gradientColors={[RivalColors.accentFill, RivalColors.accentGold]}
-                      />
-                      <Text style={[styles.focusProgressPctOnBar, styles.mFocusProgressPctOverride]}>{Math.round(featuredGoal.pct * 100)}%</Text>
-                    </View>
-                    <Text style={styles.mFocusDaysRemaining}>
-                      {featuredGoal.daysLeft === 0 ? 'Last Day' : `${featuredGoal.daysLeft} Day${featuredGoal.daysLeft === 1 ? '' : 's'} Remaining`}
-                    </Text>
                     <TouchableOpacity onPress={() => router.push('/goals')}>
                       <Text style={styles.mFocusViewLink}>View Focus →</Text>
                     </TouchableOpacity>
@@ -926,10 +966,19 @@ export default function HomeScreen() {
                     </TouchableOpacity>
                   </>
                 )}
-              </RivalCard>
+              </View>
 
-              {/* Legacy section — borderless, shared warm glow background */}
+              {/* Legacy section — borderless, shared warm glow background.
+                  Same smoke texture as Weekly Leader (Ricky's call,
+                  2026-08-24) — same style works unmodified since this
+                  section shares that card's paddingHorizontal:16, which is
+                  what mPodiumSmoke's baked-in bleed margins are sized for. */}
               <View style={styles.mLegacySection}>
+                <Image
+                  source={require('../../assets/images/backgrounds/optimized/podium-smoke.jpg')}
+                  style={styles.mLegacySmoke}
+                  resizeMode="cover"
+                />
                 <View style={styles.mLegacyStatBox}>
                   <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
                     <RivalIcon name="bolt" size={16} color={RivalColors.accentFill} />
@@ -992,7 +1041,7 @@ export default function HomeScreen() {
                   <Text style={styles.mNextEventKicker}>NEXT EVENT</Text>
                   {nextRace ? (
                     <>
-                      <Text style={styles.mNextEventName}>{nextRace.name}</Text>
+                      <Text style={styles.mNextEventName}>{formatRaceName(nextRace.name)}</Text>
                       <Text style={styles.mNextEventDate}>{formatRaceDateShort(nextRace.race_date)}</Text>
                     </>
                   ) : (
@@ -1616,7 +1665,7 @@ export default function HomeScreen() {
               (Connected Apps panel) instead of taking up home real estate
               on every visit. */}
           {!stravaConnected && (
-            <TouchableOpacity style={styles.stravaCard} onPress={connectStrava}>
+            <TouchableOpacity style={styles.stravaCard} onPress={handleConnectStrava}>
               <View>
                 <Text style={styles.stravaCardTitle}>Connect Strava</Text>
                 <Text style={styles.stravaCardSub}>Link your account to earn Effort from workouts</Text>
@@ -1660,12 +1709,12 @@ const styles = StyleSheet.create({
   // clearance or the last card ends up hidden behind it — the 48 above is
   // sized for desktop, which has no floating nav to clear.
   // paddingTop:0 (not `content`'s shared 16) — the Weekly Leader card is the
-  // first thing in the mobile feed and is meant to sit flush against the nav
-  // bar, no gap. That gap was exposing the plain mBgFixed color as a visible
-  // seam above the card's own textured background.
-  // 6px of breathing room under the top nav — flush against it read as
-  // cramped once the Weekly Leader card gained its own texture.
-  contentMobile: { paddingTop: 6, paddingBottom: 120 },
+  // first thing in the mobile feed and sits flush against the nav bar, no
+  // gap. An earlier 6px "breathing room" value read as cramped in isolation
+  // but on-device showed as exactly the visible seam this comment already
+  // warned about (plain background peeking through above the card's
+  // texture) — Ricky's call (2026-08-24), flush wins.
+  contentMobile: { paddingTop: 0, paddingBottom: 120 },
 
   navBar: { width: '100%', backgroundColor: 'rgba(14,14,14,0.65)', borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
   navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', maxWidth: 1200, marginHorizontal: 'auto', paddingHorizontal: 24, paddingVertical: 12 },
@@ -1831,63 +1880,35 @@ const styles = StyleSheet.create({
   // left as-is at fontSize:9 it pads ~5px of unwanted extra header height.
   mTimeEarnedLabel: { ...RivalType.labelCaps, fontSize: 9, lineHeight: 11, letterSpacing: 1, color: RivalColors.textSecondary },
   mTimeEarnedValue: {
-    fontFamily: RivalFontFamily, fontSize: 22, fontWeight: '800', lineHeight: 22, color: RivalColors.accentFill,
+    fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 24, fontWeight: '700', lineHeight: 26, letterSpacing: 0.2, color: RivalColors.accentFill,
     ...(Platform.OS === 'web' ? {
       backgroundImage: 'linear-gradient(100deg, #D97757 0%, #ffb59e 45%, #F5B759 100%)',
       backgroundClip: 'text', WebkitBackgroundClip: 'text', color: 'transparent',
     } as any : {}),
   },
+  // Unit letters (h/m) — deliberately NOT the serif/italic/gradient of the
+  // number: at the number's size, "h"/"m" rendered as giant swash letters
+  // welded onto the digits. Small, upright, sans. Matched lineHeight to the
+  // number (not its own smaller size) so it doesn't compress against it and
+  // read as cramped; the trailing space alone wasn't enough room between
+  // segments, so marginHorizontal adds real breathing space either side.
+  mTimeEarnedUnit: { fontFamily: RivalFontFamily, fontSize: 14, fontWeight: '700', lineHeight: 26, color: RivalColors.accentFill, marginHorizontal: 1 },
 
-  // Focus card
-  mFocusCard: {
-    borderRadius: RivalRadius.lg, paddingVertical: 20, paddingBottom: 30, paddingHorizontal: 16, alignItems: 'center', position: 'relative', overflow: 'hidden',
-    backgroundColor: '#2d241f',
-    ...(Platform.OS === 'web' ? { backgroundImage: 'linear-gradient(135deg, #231e1b 0%, #2d241f 55%, #3b2821 100%)' } as any : {}),
-  },
-  // Mockup uses a soft radial-gradient blob fading to transparent (a real
-  // glow), not a flat hard-edged tinted circle — the flat color was a much
-  // more visible/blunt shape than the mockup's soft blend.
-  // Web: gradient-only (no flat backgroundColor underneath) — a flat color
-  // there fills the whole shape uniformly and shows as a hard-edged solid
-  // circle where the radial gradient has faded to transparent. Native has
-  // no backgroundImage support, so it keeps a flat (much subtler) fallback.
-  mFocusGlowTL: {
-    position: 'absolute', top: -30, left: -30, width: 140, height: 140, borderRadius: 70,
-    ...(Platform.OS === 'web'
-      ? { backgroundImage: 'radial-gradient(circle, rgba(255,209,190,0.14) 0%, rgba(255,209,190,0) 70%)' } as any
-      : { backgroundColor: 'rgba(255,209,190,0.10)' }),
-  },
-  // Mockup covers the WHOLE card (inset: 0) with a radial ellipse anchored
-  // near the bottom-center — not a thin band at the bottom edge.
-  mFocusGlowBottom: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    ...(Platform.OS === 'web'
-      ? { backgroundImage: 'radial-gradient(ellipse 130% 100% at 50% 120%, rgba(217,119,87,0.12) 0%, rgba(0,0,0,0) 60%)' } as any
-      : { backgroundColor: 'rgba(217,119,87,0.08)' }),
-  },
+  // Focus — chrome-free, content floats directly on the page background
+  // (Ricky's call, 2026-08-24: match the Team Challenge hero's look, which
+  // has no card box of its own either). Same vertical padding as the old
+  // card retained so spacing to the sections above/below doesn't jump.
+  // Same warm radial treatment as mLegacySection, but off to one side — a
+  mFocusFree: { paddingTop: 20, paddingBottom: 24, paddingHorizontal: 16, alignItems: 'center' },
   mFocusKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 2, color: 'rgba(255,181,158,0.65)' },
-  mFocusTitle: { ...RivalType.bodyMd, fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: RivalColors.textPrimary, marginTop: 6, marginBottom: 24 },
-  mFocusHeroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, marginBottom: 4 },
-  // Display numbers use the editorial serif the app already speaks on Team Feed
-  // and Team Hub (Ricky's call, 2026-08-20, from design-preview-today-type).
-  // Selective by design: the number and the card title only -- kickers, units,
-  // labels and body text stay Manrope, so this reads as an accent rather than a
-  // change of typeface. Weight drops to 700 because Georgia has no 800 and
-  // rendered a synthetic bold; the tighter letter-spacing suited Manrope's
-  // geometry, not a serif's, so it goes too.
-  mFocusHeroNumber: {
-    fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 46, fontWeight: '700', color: RivalColors.accentFill,
-    ...(Platform.OS === 'web' ? {
-      backgroundImage: 'linear-gradient(180deg, #FFFFFF 0%, #D97757 150%)',
-      backgroundClip: 'text', WebkitBackgroundClip: 'text', color: 'transparent',
-    } as any : {}),
-  },
-  mFocusHeroUnit: { fontFamily: RivalFontFamily, fontSize: 15, color: RivalColors.textPrimary },
-  // Override for the shared focusProgressPctOnBar label (desktop keeps its
-  // own subtler treatment) — mockup's on-bar percentage is bolder/brighter.
-  mFocusProgressPctOverride: { fontFamily: RivalFontFamily, fontSize: 10, fontWeight: '700', color: 'rgba(255,255,255,0.85)' },
-  mFocusDaysRemaining: { fontFamily: RivalFontFamily, fontSize: 13, fontWeight: '700', color: RivalColors.accentText, marginTop: 10, marginBottom: 18 },
-  mFocusViewLink: { fontFamily: RivalFontFamily, fontSize: 13, fontWeight: '500', color: RivalColors.textSecondary, marginTop: 12, top: 8 },
+  mFocusTitle: { ...RivalType.bodyMd, fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: RivalColors.textPrimary, marginTop: 6, marginBottom: 14 },
+  // Ring meta row ("43% complete   129 days left") — same styling as
+  // team-hub.tsx's ringMetaRow/ringMeta/ringMetaBold, this card's own copy
+  // since that one is scoped private to team-hub.tsx.
+  mFocusRingMetaRow: { flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 14, marginBottom: 12 },
+  mFocusRingMeta: { fontFamily: RivalFontFamily, fontSize: 13, color: 'rgba(255,255,255,0.75)' },
+  mFocusRingMetaBold: { fontFamily: RivalFontFamily, fontWeight: '800', color: '#fff' },
+  mFocusViewLink: { fontFamily: RivalFontFamily, fontSize: 13, fontWeight: '500', color: RivalColors.textSecondary, marginTop: 8 },
   mFocusEmptyTitle: { ...RivalType.bodyMd, fontSize: 15, color: RivalColors.textPrimary, textAlign: 'center', marginTop: 24, marginBottom: 12 },
 
   // Weekly Leader podium
@@ -1905,6 +1926,15 @@ const styles = StyleSheet.create({
       ? { backgroundImage: 'radial-gradient(ellipse 90% 65% at 50% 55%, rgba(217,119,87,0.16) 0%, rgba(19,19,19,0) 75%), linear-gradient(135deg, #111214 0%, #181312 100%)' } as any
       : {}),
   },
+  // Vertically centred on the card, hugging the edges — the podium is capped
+  // at 360 wide and centred, so on a phone there's empty card either side of
+  // it for these to sit in without ever overlapping a pillar.
+  mLeaderArrow: {
+    position: 'absolute', top: '50%', marginTop: -18,
+    width: 36, height: 36, alignItems: 'center', justifyContent: 'center',
+  },
+  mLeaderArrowLeft: { left: 2 },
+  mLeaderArrowRight: { right: 2 },
   mLeaderKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 2, color: 'rgba(255,181,158,0.65)' },
   mLeaderTeamName: { ...RivalType.bodyMd, fontSize: 13, fontWeight: '500', color: RivalColors.textPrimary, marginTop: 6, marginBottom: 20 },
   // Capped at the mockup's own reference width — without this, a wide
@@ -1980,6 +2010,27 @@ const styles = StyleSheet.create({
         } as any)
       : {}),
   },
+  // Legacy's own copy of mPodiumSmoke — same photo, same bleed, but faded on
+  // BOTH edges. mPodiumSmoke's single bottom-only fade left a hard top
+  // cutoff, invisible on Weekly Leader (nothing sits above that card, it's
+  // first in the feed) but a visible seam here, where the stat tiles sit
+  // directly above this section.
+  mLegacySmoke: {
+    position: 'absolute', width: '100%', height: 353,
+    marginLeft: -16, marginRight: -16, marginTop: -26,
+    opacity: 0.28,
+    // Widened from an earlier 15/40 split (Ricky: "still see a seam", twice)
+    // — a narrow fully-opaque band leaves a sharp opacity jump right where
+    // the stat box (sitting on top of this image) ends and the unobstructed
+    // texture begins. A long fade on both sides with barely any flat middle
+    // reads as soft throughout instead of having an edge anywhere.
+    ...(Platform.OS === 'web'
+      ? ({
+          maskImage: 'linear-gradient(to bottom, transparent 0%, black 35%, black 55%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 35%, black 55%, transparent 100%)',
+        } as any)
+      : {}),
+  },
   // Fewer than 3 people on the board — center the real column(s) at a fixed
   // width instead of stretching flex:1 across the full card width.
   mPodiumGridSparse: { justifyContent: 'center', gap: 12 },
@@ -2000,7 +2051,7 @@ const styles = StyleSheet.create({
   // natural glyph height (clipping the tops of letters) instead of just
   // overflowing the box. Refusing to shrink keeps it fully legible.
   mPodiumName: { fontFamily: RivalFontFamily, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, flexShrink: 0 },
-  mPodiumPoints: { fontFamily: RivalFontFamily, fontSize: 18, fontWeight: '800', color: RivalColors.textPrimary, marginTop: 2, flexShrink: 0 },
+  mPodiumPoints: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 18, fontWeight: '700', color: RivalColors.textPrimary, marginTop: 2, flexShrink: 0 },
   // Pill wrapping the "X pts behind Y" + "Ends tomorrow" lines — a subtle
   // dark capsule matching the card's own palette, so this reads as a piece
   // of the podium rather than two loose lines floating under it.
@@ -2034,7 +2085,7 @@ const styles = StyleSheet.create({
   mNextEventKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 2, color: 'rgba(255,181,158,0.65)' },
   mNextEventName: { ...RivalType.bodyMd, fontSize: 15, fontWeight: '700', color: RivalColors.textPrimary, marginTop: 4 },
   mNextEventDate: { fontFamily: RivalFontFamily, fontSize: 12, color: RivalColors.textPrimary, marginTop: 2 },
-  mNextEventDaysNumber: { fontFamily: RivalFontFamily, fontSize: 30, fontWeight: '800', color: RivalColors.accentText, lineHeight: 30 },
+  mNextEventDaysNumber: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 30, fontWeight: '700', color: RivalColors.accentText, lineHeight: 30 },
   // Mockup's "DAYS" label has no explicit font-weight (regular, unlike the
   // bold orange kickers) — labelCaps defaults to 700, reset it here.
   mNextEventDaysLabel: { ...RivalType.labelCaps, fontSize: 10, fontWeight: '400', color: RivalColors.textSecondary, marginTop: 2 },
@@ -2047,11 +2098,11 @@ const styles = StyleSheet.create({
   // Negative marginTop pulls this up specifically closer to the Weekly
   // Leader card above it — content's own gap:20 is shared by every card on
   // this screen, so trim just this one gap here rather than globally.
-  mAddActivityOverride: { backgroundColor: RivalColors.accentText, width: '80%', minWidth: 0, paddingHorizontal: 13, paddingVertical: 13, marginBottom: 16, marginTop: -43 },
+  mAddActivityOverride: { backgroundColor: RivalColors.accentText, borderWidth: 0, width: '80%', minWidth: 0, paddingHorizontal: 13, paddingVertical: 13, marginBottom: 16, marginTop: -43 },
   // The base label style's lineHeight:28 (sized for titleMd's 20px font)
   // survives unless reset here, padding the pill out ~10px taller than the
   // mockup's tightly-set 15px text.
-  mAddActivityLabel: { fontFamily: RivalFontFamily, fontSize: 15, fontWeight: '700', lineHeight: 18 },
+  mAddActivityLabel: { fontFamily: RivalFontFamily, fontSize: 15, fontWeight: '700', lineHeight: 18, color: RivalColors.onAccentFill },
 
   // Legacy borderless section
   // Mockup bleeds this section edge-to-edge (`margin:0 -16px` against its
@@ -2072,12 +2123,16 @@ const styles = StyleSheet.create({
   mLegacyStatIcon: { marginBottom: 8 },
   // Row 2 (Activities/Distance/Elevation) default size — mockup uses smaller
   // type here than row 1 (Effort Today/Rank/Week Streak), not one shared size.
-  mLegacyStatValue: { fontFamily: RivalFontFamily, fontSize: 17, fontWeight: '700', color: RivalColors.textPrimary, marginTop: 8 },
-  mLegacyStatValueLg: { fontSize: 20, fontWeight: '800' },
+  // lineHeight:24 explicit on this AND mLegacyStatValueLg/Gold below — the
+  // serif family's natural line metrics differ from the sans one, so without
+  // a shared explicit value the "Rank" label sat at a different height than
+  // "Effort Today"/"Week Streak" (Ricky: "the word rank moved position").
+  mLegacyStatValue: { fontFamily: RivalFontFamily, fontSize: 17, fontWeight: '700', lineHeight: 24, color: RivalColors.textPrimary, marginTop: 8 },
+  mLegacyStatValueLg: { fontSize: 20, fontWeight: '800', lineHeight: 24 },
   // Literal #FFD700 (same gold as the podium's #1 rank) — NOT accentGold
   // (#F5B759), which is a softer peach-gold used for gradient stops
   // elsewhere. Mockup's "LEGEND" text is pure gold.
-  mLegacyStatValueGold: { fontFamily: RivalFontFamily, fontStyle: 'italic', textTransform: 'uppercase', color: '#FFD700', fontSize: 18, letterSpacing: 1.44 },
+  mLegacyStatValueGold: { fontFamily: RivalSerifFamily, fontWeight: '700', fontStyle: 'italic', textTransform: 'uppercase', color: '#FFD700', fontSize: 18, lineHeight: 24, letterSpacing: 1.44 },
   mLegacyStatUnit: { fontFamily: RivalFontFamily, fontSize: 9, color: RivalColors.textSecondary, fontWeight: '700' },
   // Mockup's small gray labels are regular weight, not bold — labelCaps
   // defaults to 700, so both label styles explicitly reset it to 400.

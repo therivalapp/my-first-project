@@ -5,12 +5,14 @@
 // it cannot be orphaned by removing a screen again.
 import '../global.css';
 import { useEffect, useState } from 'react';
-import { Platform, View } from 'react-native';
+import { AppState, AppStateStatus, Platform, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAppFonts } from '../lib/useAppFonts';
 import { registerForPushNotifications } from '../lib/notifications';
+import { supabase } from '../lib/supabase';
+import { RivalAlertHost } from '../components/rival';
 
 export default function RootLayout() {
   // Native registers Manrope from bundled .ttf files; web is a no-op because
@@ -22,6 +24,48 @@ export default function RootLayout() {
 
   useEffect(() => {
     registerForPushNotifications();
+  }, []);
+
+  // Pull fresh Strava activity on every app open/foreground, not just when
+  // someone remembers to tap "Sync now" in Settings — that manual button
+  // was previously the ONLY thing that ever called strava-backfill. Silent
+  // (no notify() calls) since this is a background refresh, not a
+  // user-initiated action; the webhook is the "real" real-time path when
+  // it's firing, this is the guaranteed fallback regardless of its status.
+  useEffect(() => {
+    let lastSyncAt = 0;
+    const MIN_INTERVAL_MS = 3 * 60 * 1000; // guards against rapid foreground/background flapping
+
+    async function autoSyncStrava() {
+      const now = Date.now();
+      if (now - lastSyncAt < MIN_INTERVAL_MS) return;
+      lastSyncAt = now;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const { data: conn } = await supabase
+        .from('fitness_connections')
+        .select('user_id')
+        .eq('user_id', session.user.id)
+        .eq('provider', 'strava')
+        .maybeSingle();
+      if (!conn) return;
+
+      fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/strava-backfill`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+        },
+      }).catch(() => {});
+    }
+
+    autoSyncStrava();
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active') autoSyncStrava();
+    });
+    return () => sub.remove();
   }, []);
 
   // iOS standalone (home-screen) web apps report two different heights, and
@@ -79,6 +123,7 @@ export default function RootLayout() {
       >
         <Stack screenOptions={{ headerShown: false }} />
       </View>
+      <RivalAlertHost />
     </SafeAreaProvider>
   );
 }
