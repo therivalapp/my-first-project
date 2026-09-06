@@ -10,7 +10,15 @@ export default function Root({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover" />
+        {/* maximum-scale=1 stops iOS Safari AUTO-ZOOMING when you focus an
+            input whose font-size is under 16px — it zooms in, and never fully
+            zooms back out, which shifts the whole layout. 28 inputs across the
+            app are under 16px (many deliberately, down to 10px in Team Hub),
+            so bumping them all would mean redesigning those screens.
+            User-initiated pinch-zoom is unaffected: iOS has ignored
+            maximum-scale for pinch since iOS 10 and only honours it for this
+            automatic focus zoom. */}
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, shrink-to-fit=no, viewport-fit=cover" />
 
         {/* iOS home-screen install: standalone (chrome-less) launch */}
         <meta name="apple-mobile-web-app-capable" content="yes" />

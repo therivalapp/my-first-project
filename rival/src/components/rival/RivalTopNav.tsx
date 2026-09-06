@@ -2,10 +2,11 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router, useIsFocused } from 'expo-router';
+import { router, useIsFocused, usePathname } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { getLevel } from '../../lib/xp';
 import { getSeasonStartISO } from '../../lib/season';
+import { getUnreadChats } from '../../lib/unreadChats';
 import { RivalColors, RivalType } from '../../constants/rivalTheme';
 import { BREAKPOINT_MOBILE_NAV } from '../../constants/breakpoints';
 import { RivalIcon, RivalIconName } from './RivalIcon';
@@ -14,7 +15,7 @@ import { RivalIcon, RivalIconName } from './RivalIcon';
 // the top of a screen (outside the ScrollView so it stays put) and pass the
 // current section so it highlights. Self-contained: fetches the user's avatar
 // itself so it needs no props beyond `active`.
-type Section = 'today' | 'activity' | 'teams';
+type Section = 'today' | 'activity' | 'teams' | 'chat';
 
 const LINKS: Array<{ key: Section; label: string; route: string; icon: RivalIconName }> = [
   { key: 'today', label: 'Today', route: '/home', icon: 'home' },
@@ -24,9 +25,36 @@ const LINKS: Array<{ key: Section; label: string; route: string; icon: RivalIcon
   // real teams yet. discover-leagues.tsx (the old "My Teams" list) needs a
   // new home; Ricky's thinking the top of this feed.
   { key: 'teams', label: 'Teams', route: '/team-feed', icon: 'groups' },
+  // Chat earns a tab because team chat is the ONLY conversation in RIVAL —
+  // the social graph is teams, so there is no other way people talk. Last in
+  // the row so the three existing tabs don't move under anyone's thumb.
+  { key: 'chat', label: 'Chat', route: '/messages', icon: 'chat' },
 ];
 
-export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section; centerSlot?: ReactNode; hideBar?: boolean }) {
+export function RivalTopNav({ active, centerSlot, hideBar, action }: {
+  active?: Section;
+  centerSlot?: ReactNode;
+  hideBar?: boolean;
+  /**
+   * ONE screen-specific action, left of the bell. Deliberately singular: the
+   * bar is shared by every screen, so anything permanent here has to earn its
+   * place on all of them. Per-screen actions belong to the screen.
+   */
+  action?: { icon: RivalIconName; label: string; onPress: () => void };
+}) {
+  // Re-checked on every navigation rather than on an interval: this bar is
+  // mounted on every screen, so a route change is both the cheapest signal
+  // that something may have changed and the moment the count is looked at.
+  const pathname = usePathname();
+  const [unreadChats, setUnreadChats] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    getUnreadChats()
+      .then((r) => { if (!cancelled) setUnreadChats(r.count); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [pathname]);
+
   const { width } = useWindowDimensions();
   // Below this, the absolutely-centered links row (built for desktop, where the
   // logo and the RANK/bell/avatar cluster are far apart) collides with the right
@@ -169,7 +197,12 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
               onPress={() => router.push(l.route as any)}
               style={[styles.bottomNavItem, isActive && styles.bottomNavItemActive, navShrunk && styles.bottomNavItemShrunk]}
             >
-              <RivalIcon name={l.icon} size={navShrunk ? 22 : 20} color={isActive ? RivalColors.accentText : RivalColors.textSecondary} />
+              <View>
+                <RivalIcon name={l.icon} size={navShrunk ? 22 : 20} color={isActive ? RivalColors.accentText : RivalColors.textSecondary} />
+                {/* A tab that looks identical at 0 and 9 unread gives no reason
+                    to tap it — the count IS the invitation. */}
+                {l.key === 'chat' && unreadChats > 0 && <View style={styles.navBadge} />}
+              </View>
               <Text style={[styles.bottomNavLabel, isActive && styles.bottomNavLabelActive, navShrunk && styles.bottomNavLabelShrunk]}>{l.label}</Text>
             </TouchableOpacity>
           );
@@ -253,12 +286,19 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
               </Text>
             </TouchableOpacity>
           )}
-          {/* Messages list (messages.tsx) — one row per team, each opening
-              that team's existing Chat tab in league.tsx. Sits left of the
-              bell per the Team Feed mockup. */}
-          <TouchableOpacity onPress={() => router.push('/messages')} style={[styles.notifBtn, narrow && styles.notifBtnNarrow]}>
-            <RivalIcon name="chat" size={narrow ? 19 : 20} color={RivalColors.accentText} />
-          </TouchableOpacity>
+          {/* The chat icon that used to sit here moved to the bottom nav, where
+              it carries an unread dot. Two doors to the same room — one of
+              them badge-less — is worse than one. This slot now takes ONE
+              optional per-screen action instead. */}
+          {action && (
+            <TouchableOpacity
+              onPress={action.onPress}
+              accessibilityLabel={action.label}
+              style={[styles.notifBtn, narrow && styles.notifBtnNarrow]}
+            >
+              <RivalIcon name={action.icon} size={narrow ? 21 : 22} color={RivalColors.accentText} />
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={() => router.push('/profile?tab=notifications')} style={[styles.notifBtn, narrow && styles.notifBtnNarrow]}>
             {/* Mockup's mobile header uses the plain calm bell (ti-bell), not
                 the "ringing" bell desktop keeps for its own header. */}
@@ -327,13 +367,20 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
                     )}
                   </View>
                 </View>
+                {/* "Profile" used to point at /profile, which is the SETTINGS
+                    page (Personal Info / Connected Apps / Notifications /
+                    Account) — while the actual profile, the one with your
+                    name, avatar and Effort, lives at /stats. profile.tsx
+                    already redirects there when you view someone else's.
+                    Both menu items also landed on the same settings page, one
+                    just deep-linking a tab of the other. */}
                 <TouchableOpacity
                   style={[styles.avatarMenuItem, hoveredItem === 'profile' && styles.avatarMenuItemHovered]}
-                  onPress={() => { setMenuOpen(false); router.push('/profile'); }}
+                  onPress={() => { setMenuOpen(false); router.push('/stats'); }}
                   {...(Platform.OS === 'web' ? { onMouseEnter: () => setHoveredItem('profile'), onMouseLeave: () => setHoveredItem(null) } as any : {})}
                 >
                   <RivalIcon name="person" size={16} color={RivalColors.accentText} />
-                  <Text style={styles.avatarMenuText}>Profile</Text>
+                  <Text style={styles.avatarMenuText}>Your Profile</Text>
                 </TouchableOpacity>
                 {/* No Friends entry: RIVAL's social unit is the Team. A one-way
                     follow makes an audience, not a training partner — and the
@@ -342,7 +389,7 @@ export function RivalTopNav({ active, centerSlot, hideBar }: { active?: Section;
                     in place so this is one line to undo. */}
                 <TouchableOpacity
                   style={[styles.avatarMenuItem, hoveredItem === 'settings' && styles.avatarMenuItemHovered]}
-                  onPress={() => { setMenuOpen(false); router.push('/profile?tab=account'); }}
+                  onPress={() => { setMenuOpen(false); router.push('/profile'); }}
                   {...(Platform.OS === 'web' ? { onMouseEnter: () => setHoveredItem('settings'), onMouseLeave: () => setHoveredItem(null) } as any : {})}
                 >
                   <RivalIcon name="settings" size={16} color={RivalColors.accentText} />
@@ -463,6 +510,16 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.8 }],
     ...(Platform.OS === 'web' ? { transformOrigin: 'center bottom' } as any : {}),
   },
+  // A dot, not a count. The number would be the number of TEAMS with unread,
+  // which reads as a message count and isn't one — and a count invites
+  // clearing-for-its-own-sake, which is pressure this app deliberately avoids.
+  // "Something's here" is the whole job.
+  navBadge: {
+    position: 'absolute', top: -3, right: -5,
+    width: 9, height: 9, borderRadius: 5,
+    backgroundColor: RivalColors.accentFill,
+  },
+
   bottomNavItem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, paddingVertical: 5, paddingHorizontal: 5, borderRadius: 16 },
   bottomNavItemActive: { backgroundColor: `${RivalColors.accentFill}22` },
   bottomNavItemShrunk: { paddingVertical: 8, gap: 0 },

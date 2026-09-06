@@ -5,6 +5,7 @@ import { useFocusEffect, router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { formatTeamName } from '../lib/identity';
 import { RivalTopNav, RivalIcon } from '../components/rival';
+import { getUnreadChats } from '../lib/unreadChats';
 import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
 
 // Same per-name color assignment as team-feed.tsx's team rail — kept as a
@@ -65,25 +66,25 @@ export default function MessagesScreen() {
       return;
     }
 
-    const [{ data: leagues }, { data: messages }, { data: reads }] = await Promise.all([
+    const [{ data: leagues }, { data: messages }, unread] = await Promise.all([
       supabase.from('leagues').select('id, name, logo_url').in('id', leagueIds),
       // Newest-first across every team at once, then keep just the first (most
       // recent) row per league_id below — one round trip instead of N.
       supabase.from('league_messages').select('league_id, user_id, body, created_at').in('league_id', leagueIds).eq('kind', 'text').order('created_at', { ascending: false }),
-      supabase.from('league_chat_reads').select('league_id, last_read_at').eq('user_id', user.id).in('league_id', leagueIds),
+      // Shared with the Chat tab's badge — a badge reading "2" over a list
+      // showing three dots is worse than showing no badge at all.
+      getUnreadChats(true),
     ]);
 
     const lastByLeague = new Map<string, { user_id: string; body: string; created_at: string }>();
     for (const m of messages ?? []) {
       if (!lastByLeague.has(m.league_id)) lastByLeague.set(m.league_id, m);
     }
-    const readByLeague = new Map((reads ?? []).map((r) => [r.league_id, r.last_read_at]));
 
     const rows: ThreadRow[] = (leagues ?? [])
       .map((l) => {
         const last = lastByLeague.get(l.id);
-        const lastReadAt = readByLeague.get(l.id);
-        const unread = !!last && (!lastReadAt || new Date(last.created_at) > new Date(lastReadAt));
+        const isUnread = unread.byLeague[l.id] ?? false;
         return {
           leagueId: l.id,
           name: l.name,
@@ -91,7 +92,7 @@ export default function MessagesScreen() {
           lastBody: last?.body ?? null,
           lastAt: last?.created_at ?? null,
           lastIsMine: last?.user_id === user.id,
-          unread,
+          unread: isUnread,
         };
       })
       .sort((a, b) => {
@@ -111,7 +112,7 @@ export default function MessagesScreen() {
     <View style={{ flex: 1 }}>
       <View style={styles.mBgFixed} />
       <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-        <RivalTopNav />
+        <RivalTopNav active="chat" />
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.title}>Messages</Text>
 
@@ -134,7 +135,7 @@ export default function MessagesScreen() {
                   <TouchableOpacity
                     key={t.leagueId}
                     style={styles.row}
-                    onPress={() => router.push({ pathname: '/league', params: { id: t.leagueId, tab: 'chat' } })}
+                    onPress={() => router.push({ pathname: '/chat', params: { id: t.leagueId } })}
                   >
                     {t.logoUrl ? (
                       <Image source={{ uri: t.logoUrl }} style={styles.avatar} />

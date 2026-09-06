@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Asset } from 'expo-asset';
 import { supabase } from '../lib/supabase';
+import { invalidateUnreadChats } from '../lib/unreadChats';
 import { notify } from '../lib/notify';
 import { getLevel } from '../lib/xp';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
@@ -898,6 +899,9 @@ export default function LeagueScreen() {
 
     await supabase.from('league_chat_reads')
       .upsert({ league_id: id, user_id: currentUserId, last_read_at: new Date().toISOString() }, { onConflict: 'league_id,user_id' });
+    // Drop the cached count so the Chat tab's dot clears as soon as you leave
+    // this screen, instead of staying lit for up to 15s after reading.
+    invalidateUnreadChats();
   }
 
   async function loadSessions() {

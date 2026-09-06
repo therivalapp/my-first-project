@@ -464,7 +464,10 @@ export default function TeamFeedScreen() {
     <View style={{ flex: 1 }}>
       <View style={styles.mBgFixed} />
       <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-        <RivalTopNav active="teams" />
+        <RivalTopNav
+          active="teams"
+          action={{ icon: 'search', label: 'Find a team', onPress: () => router.push('/discover-leagues') }}
+        />
         <ScrollView
           contentContainerStyle={[styles.content, mobile && styles.contentMobile]}
           style={Platform.OS === 'web' ? ({ WebkitOverflowScrolling: 'touch' } as any) : undefined}
@@ -517,28 +520,11 @@ export default function TeamFeedScreen() {
                   );
                 })}
 
-                {/* Discovery lives at the end of the rail, beside the teams you
-                    already have. It used to exist ONLY in the two empty states
-                    (here and Messages), so the moment you joined a single team
-                    the page for finding teams became unreachable — worst for
-                    the person whose one team has gone quiet. */}
-                <TouchableOpacity
-                  onPress={() => router.push('/discover-leagues')}
-                  style={styles.teamLogoBtn}
-                >
-                  <View style={styles.findTeamTile}>
-                    <RivalIcon name="search" size={26} color={RivalColors.accentText} />
-                  </View>
-                  <Text style={styles.findTeamLabel} numberOfLines={1}>Find a team</Text>
-                </TouchableOpacity>
               </ScrollView>
-              {/* >= 3, not > 3: the Find-a-team tile is a 4th item, so three
-                  teams is already enough to overflow the rail. */}
-              {teams.length >= 3 && (
-                <View style={styles.railArrow} pointerEvents="none">
-                  <RivalIcon name="chevronRight" size={20} color="rgba(255,255,255,0.55)" />
-                </View>
-              )}
+              {/* Discovery is NOT in this rail. Anything shaped like a team
+                  logo in a row of team logos either hides among them or
+                  shoves them aside — it lives in the top bar's action slot
+                  instead, on this screen only. */}
               </View>
             )}
           </HeroPhoto>
@@ -877,19 +863,6 @@ const styles = StyleSheet.create({
   teamCardIconText: { fontSize: 15, fontWeight: '800' },
 
   teamLogoBtn: { width: 88, alignItems: 'center' },
-  // Dashed rather than solid: reads as an empty slot to fill, not as a team
-  // you're already in.
-  findTeamTile: {
-    width: 88, height: 88, borderRadius: 16,
-    alignItems: 'center', justifyContent: 'center',
-    borderWidth: 1, borderStyle: 'dashed',
-    borderColor: 'rgba(255,255,255,0.28)',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  findTeamLabel: {
-    fontSize: 11, color: 'rgba(255,255,255,0.7)',
-    marginTop: 6, textAlign: 'center',
-  },
   teamLogoFrame: {
     width: 88, height: 88, borderRadius: 16,
     overflow: 'hidden', alignItems: 'center',
