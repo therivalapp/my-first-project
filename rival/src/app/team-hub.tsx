@@ -30,8 +30,15 @@ import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone }
 import { RivalAvatar } from '../components/rival/RivalAvatar';
 import { RivalIcon, RivalIconName, activityIconName } from '../components/rival/RivalIcon';
 import { RivalBackButton } from '../components/rival/RivalBackButton';
+import { PlanSessionSheet, EditableSession } from '../components/rival/PlanSessionSheet';
+import { openInMaps } from '../lib/maps';
+import { formatAttendees } from '../lib/attendees';
 import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
 import { matchCanonicalLift } from './scan-workout';
+
+// Matches chat.tsx's SESSION_GRACE_MS — a session stays "upcoming" for 12
+// hours past its start, since sessions carry no duration.
+const SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
 
 const INSIGHT_ICON: Record<InsightTone, RivalIconName> = { record: 'trophy', streak: 'fire', comeback: 'trendUp' };
 const INSIGHT_COLOR: Record<InsightTone, string> = {
@@ -215,6 +222,15 @@ function ChallengeRing({ pct, value, unit, size = 200, thickness = 14 }: { pct: 
 const TABS = ['Overview', 'Posts', 'Challenges', 'Members'] as const;
 type Tab = (typeof TABS)[number];
 
+type SessionRow = {
+  id: string;
+  user_id: string;
+  activity_type: string | null;
+  body: string | null;
+  scheduled_at: string | null;
+  location: string | null;
+};
+
 export default function TeamHub() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
@@ -239,6 +255,13 @@ export default function TeamHub() {
   const [boardCommentDrafts, setBoardCommentDrafts] = useState<Record<string, string>>({});
   const [expandedBoardComments, setExpandedBoardComments] = useState<Set<string>>(new Set());
   const [recentActivity, setRecentActivity] = useState<ActivityRow[]>([]);
+  const [sessions, setSessions] = useState<SessionRow[]>([]);
+  const [sessionRsvps, setSessionRsvps] = useState<Record<string, string[]>>({});
+  // Every session ever planned, not just the three shown — so "See all" can
+  // appear when there's history to see even though nothing is coming up.
+  const [sessionTotal, setSessionTotal] = useState(0);
+  const [planning, setPlanning] = useState(false);
+  const [editingSession, setEditingSession] = useState<EditableSession | null>(null);
   const [feedActivity, setFeedActivity] = useState<ActivityRow[]>([]);
   const [reactionsMap, setReactionsMap] = useState<Record<string, Array<{ user_id: string; emoji: string }>>>({});
   const [commentsMap, setCommentsMap] = useState<Record<string, Array<{ id: string; user_id: string; body: string; created_at: string }>>>({});
@@ -246,6 +269,61 @@ export default function TeamHub() {
   const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
 
   useEffect(() => { load(); }, [id]);
+
+  // Only what's still ahead. The same 12-hour grace the chat screen uses, so a
+  // morning session doesn't drop off Overview while people are still at it —
+  // one rule, defined once, rather than two screens disagreeing about whether
+  // a session is over.
+  async function loadSessions() {
+    const cutoff = new Date(Date.now() - SESSION_GRACE_MS).toISOString();
+    const { data } = await supabase
+      .from('league_messages')
+      .select('id, user_id, activity_type, body, scheduled_at, location')
+      .eq('league_id', id)
+      .eq('kind', 'session')
+      .gte('scheduled_at', cutoff)
+      .order('scheduled_at', { ascending: true })
+      .limit(3);
+    const rows = (data ?? []) as SessionRow[];
+    setSessions(rows);
+
+    const { count } = await supabase
+      .from('league_messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('league_id', id)
+      .eq('kind', 'session');
+    setSessionTotal(count ?? 0);
+
+    if (rows.length > 0) {
+      const { data: rsvps } = await supabase
+        .from('league_session_rsvps')
+        .select('message_id, user_id')
+        .in('message_id', rows.map(r => r.id));
+      const map: Record<string, string[]> = {};
+      (rsvps ?? []).forEach((r: any) => {
+        (map[r.message_id] ||= []).push(r.user_id);
+      });
+      setSessionRsvps(map);
+    } else {
+      setSessionRsvps({});
+    }
+  }
+
+  async function toggleSessionRsvp(messageId: string) {
+    if (!currentUserId) return;
+    const joined = (sessionRsvps[messageId] || []).includes(currentUserId);
+    if (joined) {
+      const { error } = await supabase.from('league_session_rsvps')
+        .delete().eq('message_id', messageId).eq('user_id', currentUserId);
+      if (error) { notify("Couldn't update your RSVP", error.message); loadSessions(); return; }
+      setSessionRsvps(prev => ({ ...prev, [messageId]: (prev[messageId] || []).filter(u => u !== currentUserId) }));
+    } else {
+      const { error } = await supabase.from('league_session_rsvps')
+        .insert({ message_id: messageId, user_id: currentUserId });
+      if (error) { notify("Couldn't update your RSVP", error.message); loadSessions(); return; }
+      setSessionRsvps(prev => ({ ...prev, [messageId]: [...(prev[messageId] || []), currentUserId] }));
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -318,6 +396,8 @@ export default function TeamHub() {
       });
       setFeedActivity(feedList);
       setRecentActivity(feedList.slice(0, 8));
+
+      await loadSessions();
 
       const feedIds = feedList.map(a => a.id);
       if (feedIds.length > 0) {
@@ -722,11 +802,12 @@ export default function TeamHub() {
                               <Text style={styles.boardNoteName} numberOfLines={1}>{p.user_id === currentUserId ? 'You' : name}</Text>
                               <Text style={styles.boardNoteTime}>{timeAgo(p.created_at)}</Text>
                             </View>
-                            {isAdmin && (
-                              <TouchableOpacity onPress={() => togglePinBoardPost(p.id, p.pinned)}>
-                                <RivalIcon name="pin" size={13} color={p.pinned ? RivalColors.accentGold : 'rgba(255,255,255,0.3)'} />
-                              </TouchableOpacity>
-                            )}
+                            {/* Any teammate can pin. If you're on the team,
+                                you're on the team — the chat doesn't need a
+                                captain deciding what the rest get to see. */}
+                            <TouchableOpacity onPress={() => togglePinBoardPost(p.id, p.pinned)}>
+                              <RivalIcon name="pin" size={13} color={p.pinned ? RivalColors.accentGold : 'rgba(255,255,255,0.3)'} />
+                            </TouchableOpacity>
                             {p.user_id === currentUserId && (
                               <TouchableOpacity onPress={() => deleteBoardPost(p.id)}>
                                 <RivalIcon name="delete" size={13} color="rgba(255,255,255,0.3)" />
@@ -942,6 +1023,88 @@ export default function TeamHub() {
                   </>
                 )}
 
+                {/* Above Recent Activity on purpose: what the team is about to
+                    do is more actionable than what it already did. */}
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionTitle}>Coming Up</Text>
+                  <TouchableOpacity style={styles.planBtn} onPress={() => setPlanning(true)}>
+                    <RivalIcon name="calendar" size={14} color={RivalColors.accentText} />
+                    <Text style={styles.planBtnText}>Plan an Activity</Text>
+                  </TouchableOpacity>
+                </View>
+                {sessions.length === 0 ? (
+                  <Text style={styles.emptyText}>No sessions planned yet.</Text>
+                ) : (
+                  <View style={{ gap: 10 }}>
+                    {sessions.map((sn) => {
+                      const going = sessionRsvps[sn.id] || [];
+                      const joined = going.includes(currentUserId);
+                      return (
+                        <View key={sn.id} style={[styles.card, styles.sessionCard]}>
+                          <View style={{ flex: 1 }}>
+                            <View style={styles.sessionKickerRow}>
+                              <Text style={styles.sessionKicker}>{(sn.activity_type ?? 'Session').toUpperCase()}</Text>
+                              {/* Only the person who planned it. Anyone else
+                                  changing the time out from under the team
+                                  would be a worse problem than a stale one. */}
+                              {sn.user_id === currentUserId && (
+                                <TouchableOpacity
+                                  onPress={() => { setEditingSession(sn); setPlanning(true); }}
+                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                >
+                                  <Text style={styles.sessionEdit}>Edit</Text>
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                            {!!sn.body && <Text style={styles.sessionTitle}>{sn.body}</Text>}
+                            {!!sn.scheduled_at && (
+                              <Text style={styles.sessionWhen}>
+                                {new Date(sn.scheduled_at).toLocaleString('en-NZ', {
+                                  weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
+                                })}
+                              </Text>
+                            )}
+                            <Text style={styles.sessionMeta}>
+                              {!!sn.location && (
+                                <Text style={styles.sessionPlace} onPress={() => openInMaps(sn.location!)}>
+                                  {sn.location}
+                                </Text>
+                              )}
+                              {!!sn.location && ' · '}
+                              {formatAttendees(going, currentUserId, memberName)}
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            style={[styles.rsvpBtn, joined && styles.rsvpBtnOut]}
+                            onPress={() => toggleSessionRsvp(sn.id)}
+                          >
+                            <Text style={[styles.rsvpText, joined && styles.rsvpTextOut]}>
+                              {joined ? "I'm out" : "I'm in"}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+
+                {/* Coming Up deliberately shows only the next three — a hub is
+                    a summary, not a diary. This is the way through to the rest,
+                    including everything already done, and it appears whenever
+                    there IS more than the three above (or any history at all,
+                    even with nothing upcoming). */}
+                {sessionTotal > sessions.length && (
+                  <TouchableOpacity
+                    style={styles.seeAllRow}
+                    onPress={() => router.push({ pathname: '/league', params: { id, tab: 'sessions' } })}
+                  >
+                    <Text style={styles.seeAllText}>
+                      See all {sessionTotal} planned {sessionTotal === 1 ? 'Activity' : 'Activities'}
+                    </Text>
+                    <RivalIcon name="chevronRight" size={16} color={RivalColors.accentText} />
+                  </TouchableOpacity>
+                )}
+
                 <View style={styles.sectionHead}>
                   <Text style={styles.sectionTitle}>Recent Activity</Text>
                 </View>
@@ -1036,6 +1199,15 @@ export default function TeamHub() {
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      <PlanSessionSheet
+        visible={planning}
+        leagueId={id as string}
+        currentUserId={currentUserId}
+        editing={editingSession}
+        onClose={() => { setPlanning(false); setEditingSession(null); }}
+        onPosted={loadSessions}
+      />
     </View>
   );
 }
@@ -1345,6 +1517,33 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: RivalColors.accentFill, borderColor: 'transparent' },
 
   sectionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  planBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999,
+    backgroundColor: `${RivalColors.accentFill}1f`,
+    borderWidth: 1, borderColor: `${RivalColors.accentFill}44`,
+  },
+  planBtnText: { fontSize: 12, fontWeight: '700', color: RivalColors.accentText },
+  sessionCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+  sessionKickerRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  sessionKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 0.7, color: RivalColors.accentText },
+  sessionEdit: { fontSize: 10, fontWeight: '800', letterSpacing: 0.7, color: RivalColors.textSecondary, textDecorationLine: 'underline' },
+  sessionTitle: { fontSize: 14, fontWeight: '700', color: '#fff', marginTop: 2 },
+  sessionWhen: { fontSize: 13, color: '#fff', marginTop: 2 },
+  sessionMeta: { fontSize: 12, color: RivalColors.textSecondary, marginTop: 2 },
+  sessionPlace: { color: RivalColors.accentText, textDecorationLine: 'underline' },
+  seeAllRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: 12, marginTop: 2,
+  },
+  seeAllText: { fontSize: 13, fontWeight: '700', color: RivalColors.accentText },
+  rsvpBtn: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
+    backgroundColor: RivalColors.accentFill,
+  },
+  rsvpBtnOut: { backgroundColor: 'transparent', borderWidth: 1, borderColor: RivalColors.textSecondary },
+  rsvpText: { fontSize: 12, fontWeight: '800', color: RivalColors.surfaceLowest },
+  rsvpTextOut: { color: RivalColors.textSecondary },
   sectionTitle: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: '#fff' },
 
   card: { backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6 },

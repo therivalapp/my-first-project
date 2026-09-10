@@ -63,7 +63,14 @@ export function RivalDateField({
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  input: { flex: 1 },
+  // minWidth:0 is load-bearing. On web a text input carries an intrinsic
+  // minimum width (roughly its default 20-character size), and a flex item
+  // will not shrink below its intrinsic minimum unless told to. In a narrow
+  // container the input therefore held full width and pushed the calendar
+  // button out past the right edge, where whatever sat next to the field
+  // rendered on top of it. Nothing about the field looked wrong on a wide
+  // screen, which is why this survived until it was put in a half-width slot.
+  input: { flex: 1, minWidth: 0 },
   calendarBtn: {
     width: 40,
     height: 40,

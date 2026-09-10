@@ -20,3 +20,4 @@ export { PhotoPositioner } from './PhotoPositioner';
 export { CoverImage } from './CoverImage';
 export type { DiaryActivity } from './ActivityDiaryViewer';
 export type { RivalIconName } from './RivalIcon';
+export { PlanSessionSheet } from './PlanSessionSheet';

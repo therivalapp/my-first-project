@@ -299,16 +299,16 @@ export default function LeagueScreen() {
   const [feedAvatarMap, setFeedAvatarMap] = useState<Record<string, string | null>>({});
   const seasonDaysLeft = daysUntilSeasonEnd();
 
-  const VALID_TABS = ['feed', 'chat', 'sessions', 'challenges'] as const;
-  const [activeTab, setActiveTab] = useState<'feed' | 'chat' | 'sessions' | 'challenges'>(
+  // Chat lives on its own screen (/chat) — it needs a full-height composer and
+  // a keyboard-aware layout that a tab inside a scrolling team page can't give
+  // it. A ?tab=chat link from anywhere older lands on Feed rather than 404ing.
+  const VALID_TABS = ['feed', 'sessions', 'challenges'] as const;
+  const [activeTab, setActiveTab] = useState<'feed' | 'sessions' | 'challenges'>(
     VALID_TABS.includes(initialTabParam as any) ? (initialTabParam as any) : 'feed'
   );
   const [sessionsView, setSessionsView] = useState<'upcoming' | 'history'>('upcoming');
   const [allSessions, setAllSessions] = useState<ChatMessage[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatLoading, setChatLoading] = useState(true);
-  const [chatInput, setChatInput] = useState('');
   const [rsvpMap, setRsvpMap] = useState<Record<string, string[]>>({});
   const [showSessionComposer, setShowSessionComposer] = useState(false);
   const [sessionType, setSessionType] = useState('Run');
@@ -317,10 +317,6 @@ export default function LeagueScreen() {
   const [sessionLocation, setSessionLocation] = useState('');
   const [sessionNote, setSessionNote] = useState('');
   const [postingSession, setPostingSession] = useState(false);
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const chatScrollRef = useRef<ScrollView>(null);
-  const dividerRef = useRef<View>(null);
-  const [unreadDividerId, setUnreadDividerId] = useState<string | null>(null);
   const [showQuickTrain, setShowQuickTrain] = useState(false);
   const [quickTrainType, setQuickTrainType] = useState('Run');
   const [quickTrainMinutes, setQuickTrainMinutes] = useState(30);
@@ -358,7 +354,6 @@ export default function LeagueScreen() {
 
   useEffect(() => { loadLeague(); }, [id]);
   useEffect(() => { if (currentUserId) loadEncouragedToday(); }, [currentUserId]);
-  useEffect(() => { if (id && activeTab === 'chat' && currentUserId) enterChatAndMarkRead(); }, [id, activeTab, currentUserId]);
   useEffect(() => { if (id && activeTab === 'sessions') loadSessions(); }, [id, activeTab]);
   useEffect(() => {
     if (id && activeTab === 'challenges') {
@@ -368,8 +363,8 @@ export default function LeagueScreen() {
   }, [id, activeTab]);
 
   useEffect(() => {
-    if (!id || (activeTab !== 'chat' && activeTab !== 'sessions')) return;
-    const refresh = () => { if (activeTab === 'chat') loadChat(); else loadSessions(); };
+    if (!id || activeTab !== 'sessions') return;
+    const refresh = () => loadSessions();
     const channel = supabase
       .channel(`league-chat-${id}-${activeTab}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'league_messages', filter: `league_id=eq.${id}` }, refresh)
@@ -798,17 +793,6 @@ export default function LeagueScreen() {
     input.click();
   }
 
-  function handleChatInputChange(text: string) {
-    setChatInput(text);
-    const match = text.match(/@(\w*)$/);
-    setMentionQuery(match ? match[1] : null);
-  }
-
-  function insertMention(name: string) {
-    setChatInput(prev => prev.replace(/@(\w*)$/, `@${name.replace(/\s+/g, '')} `));
-    setMentionQuery(null);
-  }
-
   function renderMessageBody(body: string | null) {
     if (!body) return null;
     const names = members.map(getDisplayName).filter(Boolean).sort((a, b) => b.length - a.length);
@@ -849,59 +833,6 @@ export default function LeagueScreen() {
     }
     setCodeCopied(true);
     setTimeout(() => setCodeCopied(false), 2000);
-  }
-
-  async function loadChat() {
-    setChatLoading(true);
-    const { data } = await supabase
-      .from('league_messages')
-      .select('id, user_id, kind, body, activity_type, scheduled_at, location, created_at')
-      .eq('league_id', id)
-      .order('created_at', { ascending: true })
-      .limit(200);
-
-    setChatMessages(data || []);
-
-    const sessionIds = (data || []).filter(m => m.kind === 'session').map(m => m.id);
-    if (sessionIds.length > 0) {
-      const { data: rsvps } = await supabase
-        .from('league_session_rsvps')
-        .select('message_id, user_id')
-        .in('message_id', sessionIds);
-      const map: Record<string, string[]> = {};
-      (rsvps || []).forEach((r: any) => {
-        if (!map[r.message_id]) map[r.message_id] = [];
-        map[r.message_id].push(r.user_id);
-      });
-      setRsvpMap(map);
-    }
-    setChatLoading(false);
-    return data || [];
-  }
-
-  async function enterChatAndMarkRead() {
-    if (!currentUserId) return;
-    const { data: readRow } = await supabase
-      .from('league_chat_reads')
-      .select('last_read_at')
-      .eq('league_id', id)
-      .eq('user_id', currentUserId)
-      .maybeSingle();
-
-    const messages = await loadChat();
-
-    if (readRow?.last_read_at) {
-      const firstUnread = messages.find(m => new Date(m.created_at) > new Date(readRow.last_read_at));
-      setUnreadDividerId(firstUnread?.id ?? null);
-    } else {
-      setUnreadDividerId(null);
-    }
-
-    await supabase.from('league_chat_reads')
-      .upsert({ league_id: id, user_id: currentUserId, last_read_at: new Date().toISOString() }, { onConflict: 'league_id,user_id' });
-    // Drop the cached count so the Chat tab's dot clears as soon as you leave
-    // this screen, instead of staying lit for up to 15s after reading.
-    invalidateUnreadChats();
   }
 
   async function loadSessions() {
@@ -1185,23 +1116,6 @@ export default function LeagueScreen() {
     loadLvlChallenges();
   }
 
-  async function sendChatMessage() {
-    const text = chatInput.trim();
-    if (!text || !currentUserId) return;
-    setChatInput('');
-    const { error } = await supabase.from('league_messages').insert({
-      league_id: id, user_id: currentUserId, kind: 'text', body: text,
-    });
-    if (error) {
-      // The input was cleared optimistically — put the text back so a failed
-      // send doesn't silently swallow what they typed.
-      setChatInput(text);
-      notify("Couldn't send that message", error.message);
-      return;
-    }
-    loadChat();
-  }
-
   async function postSession() {
     if (!currentUserId) return;
     const isoDate = displayToIsoDate(sessionDate);
@@ -1234,7 +1148,7 @@ export default function LeagueScreen() {
     setShowSessionComposer(false);
     setSessionLocation('');
     setSessionNote('');
-    loadChat();
+    loadSessions();
     loadFeed(members, league?.created_at);
   }
 
@@ -1279,9 +1193,8 @@ export default function LeagueScreen() {
     setPostingQuickTrain(false);
     setShowQuickTrain(false);
     setQuickTrainLocation('');
-    loadChat();
+    loadSessions();
     loadFeed(members, league?.created_at);
-    if (activeTab === 'sessions') loadSessions();
   }
 
   async function toggleRsvp(messageId: string) {
@@ -1289,11 +1202,11 @@ export default function LeagueScreen() {
     const joined = (rsvpMap[messageId] || []).includes(currentUserId);
     if (joined) {
       const { error: rsvpOutErr } = await supabase.from('league_session_rsvps').delete().eq('message_id', messageId).eq('user_id', currentUserId);
-      if (rsvpOutErr) { notify("Couldn't update your RSVP", rsvpOutErr.message); loadChat(); return; }
+      if (rsvpOutErr) { notify("Couldn't update your RSVP", rsvpOutErr.message); loadSessions(); return; }
       setRsvpMap(prev => ({ ...prev, [messageId]: (prev[messageId] || []).filter(u => u !== currentUserId) }));
     } else {
       const { error: rsvpInErr } = await supabase.from('league_session_rsvps').insert({ message_id: messageId, user_id: currentUserId });
-      if (rsvpInErr) { notify("Couldn't update your RSVP", rsvpInErr.message); loadChat(); return; }
+      if (rsvpInErr) { notify("Couldn't update your RSVP", rsvpInErr.message); loadSessions(); return; }
       setRsvpMap(prev => ({ ...prev, [messageId]: [...(prev[messageId] || []), currentUserId] }));
     }
   }
@@ -1326,7 +1239,7 @@ export default function LeagueScreen() {
       // interrupting with a dialog, but never leave the UI showing a reaction
       // the server rejected.
       const { error: unreactErr } = await supabase.from('feed_reactions').delete().eq('target_type', targetType).eq('target_id', targetId).eq('user_id', currentUserId);
-      if (unreactErr) loadChat();
+      if (unreactErr) loadFeed(members, league?.created_at);
       setReactionsMap(prev => ({ ...prev, [key]: (prev[key] || []).filter(r => r.user_id !== currentUserId) }));
     } else {
       const { error: reactErr } = await supabase.from('feed_reactions').upsert(
@@ -2001,12 +1914,6 @@ export default function LeagueScreen() {
             <Text style={[styles.tabSwitchText, activeTab === 'feed' && styles.tabSwitchTextActive]}>Feed</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.tabSwitchBtn, activeTab === 'chat' && styles.tabSwitchBtnActive]}
-            onPress={() => setActiveTab('chat')}
-          >
-            <Text style={[styles.tabSwitchText, activeTab === 'chat' && styles.tabSwitchTextActive]}>💬 Chat</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
             style={[styles.tabSwitchBtn, activeTab === 'sessions' && styles.tabSwitchBtnActive]}
             onPress={() => setActiveTab('sessions')}
           >
@@ -2092,7 +1999,7 @@ export default function LeagueScreen() {
         {wide && (
           <View style={styles.centerHeader}>
             <Text style={styles.centerTitle}>
-              {activeTab === 'feed' ? 'Team Feed' : activeTab === 'chat' ? 'Team Chat' : activeTab === 'sessions' ? 'Sessions' : 'Challenges'}
+              {activeTab === 'feed' ? 'Team Feed' : activeTab === 'sessions' ? 'Sessions' : 'Challenges'}
             </Text>
             <Text style={styles.centerSub}>{formatTeamName(league.name)} · {members.length} {members.length === 1 ? 'member' : 'members'}</Text>
           </View>
@@ -2234,160 +2141,6 @@ export default function LeagueScreen() {
         </>
         )}
 
-        {activeTab === 'chat' && (
-          <View style={styles.chatSection}>
-            <TouchableOpacity style={styles.planSessionBtn} onPress={() => setShowSessionComposer(!showSessionComposer)}>
-              <Text style={styles.planSessionBtnText}>{showSessionComposer ? '✕ Cancel' : '📅 Plan a session'}</Text>
-            </TouchableOpacity>
-
-            {showSessionComposer && (
-              <View style={styles.sessionComposer}>
-                <Text style={styles.composerLabel}>Activity</Text>
-                <View style={styles.typeChipRow}>
-                  {SESSION_TYPES.map((t) => (
-                    <TouchableOpacity
-                      key={t}
-                      style={[styles.typeChip, sessionType === t && styles.typeChipActive]}
-                      onPress={() => setSessionType(t)}
-                    >
-                      <Text style={[styles.typeChipText, sessionType === t && styles.typeChipTextActive]}>
-                        {ACTIVITY_ICONS[t] || '🏅'} {t}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <Text style={styles.composerLabel}>Title</Text>
-                <TextInput style={styles.composerInput} value={sessionNote} onChangeText={setSessionNote} placeholder="e.g. Saturday Sunrise Run" placeholderTextColor="#555" />
-                <View style={styles.composerRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.composerLabel}>Date</Text>
-                    <RivalDateField value={sessionDate} onChangeText={setSessionDate} inputStyle={styles.composerInput} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.composerLabel}>Time</Text>
-                    <TextInput style={styles.composerInput} value={sessionTime} onChangeText={setSessionTime} placeholder="HH:MM" placeholderTextColor="#555" />
-                  </View>
-                </View>
-                <Text style={styles.composerLabel}>Location (optional)</Text>
-                <TextInput style={styles.composerInput} value={sessionLocation} onChangeText={setSessionLocation} placeholder="e.g. Coastal Track car park, Mission Bay" placeholderTextColor="#555" />
-                <Text style={styles.composerHint}>Tappable in Maps — include the suburb/city so it finds the right spot.</Text>
-                <TouchableOpacity style={styles.postSessionBtn} onPress={postSession} disabled={postingSession}>
-                  <Text style={styles.postSessionBtnText}>{postingSession ? 'Posting…' : 'Post session'}</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {chatLoading ? (
-              <Text style={styles.feedLoadingText}>Loading…</Text>
-            ) : chatMessages.length === 0 ? (
-              <View style={styles.feedEmpty}>
-                <Text style={styles.feedEmptyIcon}>💬</Text>
-                <Text style={styles.feedEmptyText}>No messages yet</Text>
-                <Text style={styles.feedEmptySubText}>Say hi, or plan your first session together.</Text>
-              </View>
-            ) : (
-              <ScrollView
-                ref={chatScrollRef}
-                style={styles.chatScrollArea}
-                showsVerticalScrollIndicator
-                persistentScrollbar
-                onContentSizeChange={() => {
-                  const dividerNode: any = dividerRef.current;
-                  if (unreadDividerId && dividerNode?.scrollIntoView) {
-                    dividerNode.scrollIntoView({ block: 'center' });
-                  } else {
-                    chatScrollRef.current?.scrollToEnd({ animated: false });
-                  }
-                }}
-              >
-              <View style={styles.chatList}>
-                {chatMessages.map((msg) => {
-                  const isMe = msg.user_id === currentUserId;
-                  const name = memberName(msg.user_id);
-                  const color = avatarColor(name);
-                  const showUnreadDivider = msg.id === unreadDividerId;
-                  const avatar = memberAvatar(msg.user_id);
-
-                  const divider = showUnreadDivider ? (
-                    <View
-                      key={`divider-${msg.id}`}
-                      style={styles.unreadDivider}
-                      ref={dividerRef}
-                    >
-                      <View style={styles.unreadDividerLine} />
-                      <Text style={styles.unreadDividerText}>New messages</Text>
-                      <View style={styles.unreadDividerLine} />
-                    </View>
-                  ) : null;
-
-                  if (msg.kind === 'session') {
-                    return (
-                      <View key={msg.id}>
-                        {divider}
-                        {renderSessionCard(msg)}
-                      </View>
-                    );
-                  }
-
-                  return (
-                    <View key={msg.id}>
-                      {divider}
-                      <View style={[styles.chatBubbleRow, isMe && styles.chatBubbleRowMe]}>
-                        {!isMe && (
-                          <TouchableOpacity onPress={() => goToProfile(msg.user_id)}>
-                            <View style={[styles.chatAvatar, { backgroundColor: color + '33', borderColor: color }]}>
-                              {avatar ? <Image source={{ uri: avatar }} style={styles.feedAvatarImg} /> : <Text style={[styles.feedAvatarText, { color, fontSize: 10 }]}>{name.slice(0, 2).toUpperCase()}</Text>}
-                            </View>
-                          </TouchableOpacity>
-                        )}
-                        <View style={[styles.chatBubble, isMe && styles.chatBubbleMe]}>
-                          {!isMe && (
-                            <TouchableOpacity onPress={() => goToProfile(msg.user_id)}>
-                              <Text style={styles.chatBubbleName}>{name}</Text>
-                            </TouchableOpacity>
-                          )}
-                          {renderMessageBody(msg.body)}
-                          <Text style={styles.chatBubbleTime}>{timeAgo(msg.created_at)}</Text>
-                        </View>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-              </ScrollView>
-            )}
-
-            {mentionQuery !== null && (
-              <View style={styles.mentionSuggestRow}>
-                {members
-                  .filter(m => getDisplayName(m).toLowerCase().includes(mentionQuery.toLowerCase()))
-                  .slice(0, 5)
-                  .map(m => (
-                    <TouchableOpacity key={m.user_id} style={styles.mentionChip} onPress={() => insertMention(getDisplayName(m))}>
-                      <Text style={styles.mentionChipText}>@{getDisplayName(m)}</Text>
-                    </TouchableOpacity>
-                  ))}
-                {members.filter(m => getDisplayName(m).toLowerCase().includes(mentionQuery.toLowerCase())).length === 0 && (
-                  <Text style={styles.mentionNoMatch}>No members match "@{mentionQuery}"</Text>
-                )}
-              </View>
-            )}
-
-            <View style={styles.chatInputRow}>
-              <TextInput
-                style={styles.chatInput}
-                value={chatInput}
-                onChangeText={handleChatInputChange}
-                placeholder="Message your team… (use @ to tag someone)"
-                placeholderTextColor="#555"
-                onSubmitEditing={sendChatMessage}
-              />
-              <TouchableOpacity style={styles.chatSendBtn} onPress={sendChatMessage} disabled={!chatInput.trim()}>
-                <Text style={styles.chatSendBtnText}>Send</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
 
         {activeTab === 'sessions' && (() => {
           const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -2417,7 +2170,7 @@ export default function LeagueScreen() {
               </View>
 
               <TouchableOpacity style={styles.planSessionBtn} onPress={() => setShowSessionComposer(!showSessionComposer)}>
-                <Text style={styles.planSessionBtnText}>{showSessionComposer ? '✕ Cancel' : '📅 Plan a session'}</Text>
+                <Text style={styles.planSessionBtnText}>{showSessionComposer ? '✕ Cancel' : '📅 Plan an Activity'}</Text>
               </TouchableOpacity>
 
               {showSessionComposer && (
@@ -2772,12 +2525,6 @@ export default function LeagueScreen() {
         )}
       </View>
 
-      {wide && activeTab !== 'chat' && (
-        <TouchableOpacity style={styles.chatPill} onPress={() => setActiveTab('chat')}>
-          <Text style={styles.chatPillIcon}>💬</Text>
-          <Text style={styles.chatPillText}>Team Chat</Text>
-        </TouchableOpacity>
-      )}
       </SafeAreaView>
 
       {/* window.confirm renders as the browser's own "localhost says" dialog

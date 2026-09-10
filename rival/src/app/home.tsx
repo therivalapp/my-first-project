@@ -255,8 +255,8 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                 <Text style={styles.mLeaderKicker}>WEEKLY LEADER</Text>
                 {leader && <Text style={styles.mLeaderTeamName}>{leader.teamName}</Text>}
 
-                {leader === null ? (
-                  <View style={{ alignItems: 'center', gap: 6, marginTop: 20 }}>
+                {leader === null || leader.standings.length === 0 ? (
+                  <View style={styles.mLeaderEmpty}>
                     <View style={styles.medalRing}><RivalIcon name="medal" size={28} color="#ECC654" /></View>
                     <Text style={styles.mLeaderEmptyTitle}>TAKE THE LEAD</Text>
                     <Text style={styles.mLeaderEmptySub}>Earn the first Effort</Text>
@@ -265,7 +265,7 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                 ) : (() => {
                   const { standings, daysRemaining } = leader;
                   const selfIndex = standings.findIndex((e) => e.isSelf);
-                  const endsLabel = daysRemaining === 0 ? 'Last day' : daysRemaining === 1 ? 'Ends tomorrow' : `${daysRemaining} days remaining`;
+                  const endsLabel = daysRemaining === 0 ? 'Last Day' : daysRemaining === 1 ? 'Ends Tomorrow' : `${daysRemaining} Days Remaining`;
                   const slots = podiumSlots(standings);
                   const maxPoints = standings[0]?.points || 1;
                   // A tie for 1st consumes two of the podium's three "places" — the
@@ -452,7 +452,7 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                           );
                         }
                         return (
-                          <View style={[styles.mPodiumMetaCapsule, centered && { alignItems: 'center' }]}>
+                          <View style={[styles.mPodiumMetaCapsule, (centered || !story) && { alignItems: 'center' }]}>
                             {story && (
                               <Text style={[styles.mPodiumOutsideRow, centered && { textAlign: 'center' }]}>
                                 {story.before}
@@ -465,7 +465,14 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                 (solo, or "Leading by N") have no trailing text, so the row is
                                 shorter and the same pull-up overlaps this text on top of it —
                                 regardless of whether a gap number is present. */}
-                            <Text style={[styles.mLeaderFooterMeta, story && !story.after && { marginTop: -3, marginLeft: 0 }, centered && { textAlign: 'center' }]}>{endsLabel}</Text>
+                            <Text style={[
+                              styles.mLeaderFooterMeta,
+                              // Only a row with trailing text after the number
+                              // ("3 Behind Sandy") is tall enough to tuck under.
+                              story && story.after ? { marginTop: -18, marginLeft: 46 } : null,
+                              story && !story.after ? { marginTop: -3 } : null,
+                              (centered || !story) && { textAlign: 'center', alignSelf: 'center' },
+                            ]}>{endsLabel}</Text>
                           </View>
                         );
                       })()}
@@ -719,10 +726,13 @@ export default function HomeScreen() {
         const rankedByLeague: Record<string, string[]> = {};
         const everyRankedId = new Set<string>();
         for (const league of leagueListWithCounts) {
+          // A team where nobody has scored yet this week still gets an entry —
+          // an empty list, not a missing one. Dropping it removed the team from
+          // the carousel entirely, so someone in three teams saw one card and
+          // no way to swipe, as if the other two didn't exist.
           const ids = (memberIdsByLeague[league.id] || [])
             .filter((id) => (pointsByUser[id] || 0) > 0)
             .sort((a, b) => pointsByUser[b] - pointsByUser[a]);
-          if (ids.length === 0) continue;
           rankedByLeague[league.id] = ids;
           ids.forEach((id) => everyRankedId.add(id));
         }
@@ -737,8 +747,7 @@ export default function HomeScreen() {
         }
 
         for (const league of leagueListWithCounts) {
-          const rankedIds = rankedByLeague[league.id];
-          if (!rankedIds) continue;
+          const rankedIds = rankedByLeague[league.id] ?? [];
           // First name + last initial, always — see weeklyLeaderName above.
           const standings: WeeklyLeaderEntry[] = rankedIds.map((id) => ({
             userId: id,
@@ -750,6 +759,9 @@ export default function HomeScreen() {
           leaders.push({ leagueId: league.id, teamName: formatTeamName(league.name), daysRemaining, standings });
         }
       }
+      // Most-active team first, but never lead with an empty board when a
+      // team has real movement to show.
+      leaders.sort((a, b) => Number(b.standings.length > 0) - Number(a.standings.length > 0));
       setWeeklyLeaders(leaders);
     } else {
       setWeeklyLeaders([]);
@@ -875,6 +887,18 @@ export default function HomeScreen() {
                       pagingEnabled
                       showsHorizontalScrollIndicator={false}
                       style={{ width: windowWidth - 32 }}
+                      // Both handlers on purpose. onMomentumScrollEnd alone is
+                      // the natural fit, but react-native-web only synthesises
+                      // it from a scroll-idle timer, and a trackpad or a slow
+                      // drag can settle without ever firing one — the arrows
+                      // then point the wrong way, or vanish, on a card that did
+                      // move. onScroll keeps the index honest whatever the
+                      // input device; momentum end is the cheap confirmation.
+                      scrollEventThrottle={16}
+                      onScroll={(e) => {
+                        const idx = Math.round(e.nativeEvent.contentOffset.x / (windowWidth - 32));
+                        setLeaderCardIndex((cur) => (cur === idx ? cur : idx));
+                      }}
                       onMomentumScrollEnd={(e) => {
                         const idx = Math.round(e.nativeEvent.contentOffset.x / (windowWidth - 32));
                         setLeaderCardIndex(idx);
@@ -2069,9 +2093,14 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start', backgroundColor: 'rgba(19,19,19,0.55)', borderWidth: 1, borderColor: RivalColors.surfaceBright,
   },
   mPodiumOutsideRow: { fontFamily: RivalFontFamily, fontSize: 15, fontWeight: '700', color: '#FFFFFF', textAlign: 'left', letterSpacing: 0.5 },
-  // marginLeft lines "Ends tomorrow" up under "Behind" on the line above —
-  // tuned by measuring where "Behind" actually starts, not a guess.
-  mLeaderFooterMeta: { fontFamily: RivalFontFamily, fontSize: 11, color: RivalColors.textSecondary, marginTop: -18, marginLeft: 46 },
+  // No offsets in the base style. It used to carry marginTop:-18/marginLeft:46
+  // to tuck "Ends tomorrow" under the word "Behind" on the line above — but
+  // that line only exists when there IS a rank story. With no story (you're not
+  // on the board, or you're alone on it) the pull-up dragged this text clear out
+  // of its own capsule, leaving the label floating over the podium's stage glow
+  // above an empty pill. The tuck now lives on the branch that actually has a
+  // line to tuck under.
+  mLeaderFooterMeta: { fontFamily: RivalFontFamily, fontSize: 11, color: RivalColors.textSecondary },
   mLeaderEmptyTitle: { fontFamily: RivalFontFamily, fontSize: 14, fontWeight: '500', letterSpacing: 3, color: RivalColors.textPrimary, textAlign: 'center' },
   mLeaderEmptySub: { fontFamily: RivalFontFamily, fontSize: 11, fontWeight: '500', color: '#ffcabb', letterSpacing: 1, marginTop: 0, textAlign: 'center' },
 
@@ -2151,6 +2180,19 @@ const styles = StyleSheet.create({
   mLegacyDivider: { width: 1, height: 56, alignSelf: 'center', backgroundColor: RivalColors.accentFill, opacity: 0.4, marginTop: 8, marginBottom: 6 },
   // Half the Legacy divider's length — leads the eye down toward the Add
   // Activity button below the empty-state card instead of just floating copy.
+  // The carousel pages every team through one shared height — the tallest
+  // card's. That has to stay: resizing per team would make Add Activity slide
+  // up and down under your thumb as you swipe. So the empty state doesn't
+  // shrink the card, it fills it — flex:1 claims the leftover space and centres
+  // in it, instead of sitting at the top leaving the whole surplus as one dead
+  // gap above the button.
+  //
+  // minHeight is the fallback for when this page is the ONLY one (a single team
+  // with no Effort yet), where there's no taller sibling to stretch against and
+  // flex:1 has nothing to claim. It's the populated podium's own content height:
+  // mPodiumGrid's 221 (31 of which is its paddingTop) plus the meta capsule's
+  // 19 marginTop + 5/8 padding + ~32 of two text lines.
+  mLeaderEmpty: { flex: 1, minHeight: 285, alignItems: 'center', justifyContent: 'center', gap: 6 },
   mLeaderEmptyDivider: { width: 1, height: 36, alignSelf: 'center', backgroundColor: RivalColors.accentFill, opacity: 0.4, marginTop: 4 },
   mLegacyViewAllLink: { fontFamily: RivalFontFamily, fontSize: 13, fontWeight: '500', color: RivalColors.textSecondary },
 

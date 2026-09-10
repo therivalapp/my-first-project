@@ -9,7 +9,10 @@ import { supabase } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { formatDisplayName } from '../lib/identity';
 import { invalidateUnreadChats } from '../lib/unreadChats';
-import { RivalIcon, RivalBackButton } from '../components/rival';
+import { openInMaps } from '../lib/maps';
+import { formatAttendees } from '../lib/attendees';
+import { RivalIcon, RivalBackButton, PlanSessionSheet } from '../components/rival';
+import type { EditableSession } from '../components/rival/PlanSessionSheet';
 import { RivalColors, RivalRadius } from '../constants/rivalTheme';
 
 // Dedicated team chat, laid out the way Messenger does it.
@@ -59,6 +62,11 @@ const REACTIONS = ['❤️', '🔥', '⚡', '💪', '👏', '🙌'] as const;
 // What a double-tap gives, and what pre-emoji rows are shown as.
 const DEFAULT_REACTION = '❤️';
 const DOUBLE_TAP_MS = 280;
+// How long a session stays "upcoming" after its start time. Generous on
+// purpose: sessions carry no duration, so one number has to cover a 40-minute
+// run and an all-day hike, and a meet-up going stale early is worse than one
+// lingering. 12 hours keeps a morning session live until the evening.
+const SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
 
 function timeLabel(iso: string) {
   return new Date(iso).toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit' });
@@ -135,6 +143,15 @@ export default function ChatScreen() {
   // userId -> the last message they have read, for the seen-by avatars.
   const [seenBy, setSeenBy] = useState<Record<string, string[]>>({});
   const [sessionsOnly, setSessionsOnly] = useState(false);
+  const [planning, setPlanning] = useState(false);
+  const [editingSession, setEditingSession] = useState<EditableSession | null>(null);
+  // Ticks so a session crosses into "Done" while the screen is open, instead of
+  // waiting for a reload. A minute is finer than the grace period needs.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   const scrollRef = useRef<ScrollView>(null);
   const editorRef = useRef<any>(null);
@@ -341,10 +358,30 @@ export default function ChatScreen() {
     return m?.users ? formatDisplayName(m.users) : 'Athlete';
   }, [memberFor]);
 
-  const sessionCount = useMemo(() => messages.filter((m) => m.kind === 'session').length, [messages]);
+  // A session stays "upcoming" for a few hours past its start time — a 7am
+  // swim is still the thing you're looking at at 7:30, and nothing is more
+  // annoying than a meet-up vanishing from the list while you're walking to it.
+  const isPastSession = useCallback((m: Msg) => {
+    if (m.kind !== 'session') return false;
+    if (!m.scheduled_at) return false; // no time set — never expires on its own
+    return new Date(m.scheduled_at).getTime() + SESSION_GRACE_MS < now;
+  }, [now]);
+
+  // The badge means "meet-ups you could still turn up to", so it counts only
+  // upcoming ones. Counting every session ever planned made a stack of
+  // finished events look like seven things demanding an answer.
+  const upcomingSessions = useMemo(
+    () => messages.filter((m) => m.kind === 'session' && !isPastSession(m)),
+    [messages, isPastSession],
+  );
+  const hasAnySession = useMemo(() => messages.some((m) => m.kind === 'session'), [messages]);
+
+  // The transcript keeps past sessions — they're part of the conversation, and
+  // deleting them would leave replies talking about nothing. The sessions lens
+  // drops them, because that view is for planning, not for history.
   const visible = useMemo(
-    () => (sessionsOnly ? messages.filter((m) => m.kind === 'session') : messages),
-    [messages, sessionsOnly],
+    () => (sessionsOnly ? upcomingSessions : messages),
+    [messages, sessionsOnly, upcomingSessions],
   );
 
   // @mentions render in the accent colour rather than as raw "@name" text.
@@ -365,11 +402,29 @@ export default function ChatScreen() {
   function renderSession(msg: Msg) {
     const joiners = rsvpMap[msg.id] ?? [];
     const joined = joiners.includes(currentUserId);
+    const past = isPastSession(msg);
     return (
-      <View style={styles.sessionCard}>
+      <View style={[styles.sessionCard, past && styles.sessionCardPast]}>
         <View style={styles.sessionHead}>
-          <RivalIcon name="calendar" size={14} color={RivalColors.accentText} />
-          <Text style={styles.sessionKicker}>{(msg.activity_type ?? 'Session').toUpperCase()}</Text>
+          <RivalIcon
+            name="calendar"
+            size={14}
+            color={past ? RivalColors.textSecondary : RivalColors.accentText}
+          />
+          <Text style={[styles.sessionKicker, past && styles.sessionKickerPast]}>
+            {(msg.activity_type ?? 'Session').toUpperCase()}
+          </Text>
+          {past && <Text style={styles.sessionDone}>· Completed</Text>}
+          {/* Nothing to edit once it's happened. */}
+          {!past && msg.user_id === currentUserId && (
+            <TouchableOpacity
+              onPress={() => { setEditingSession(msg); setPlanning(true); }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={{ marginLeft: 'auto' }}
+            >
+              <Text style={styles.sessionEdit}>Edit</Text>
+            </TouchableOpacity>
+          )}
         </View>
         {!!msg.body && <Text style={styles.sessionTitle}>{msg.body}</Text>}
         {!!msg.scheduled_at && (
@@ -379,19 +434,34 @@ export default function ChatScreen() {
             })}
           </Text>
         )}
-        {!!msg.location && <Text style={styles.sessionWhere}>{msg.location}</Text>}
+        {!!msg.location && (
+          <TouchableOpacity
+            onPress={() => openInMaps(msg.location!)}
+            style={styles.sessionWhereRow}
+            accessibilityLabel={`Open ${msg.location} in maps`}
+          >
+            <RivalIcon name="location" size={12} color={RivalColors.textSecondary} />
+            <Text style={styles.sessionWhere}>{msg.location}</Text>
+          </TouchableOpacity>
+        )}
         <View style={styles.sessionFoot}>
           <Text style={styles.sessionGoing}>
-            {joiners.length} {joiners.length === 1 ? 'person' : 'people'} going
+            {past
+              ? `${joiners.length} ${joiners.length === 1 ? 'person' : 'people'} attended`
+              : formatAttendees(joiners, currentUserId, nameFor)}
           </Text>
-          <TouchableOpacity
-            style={[styles.rsvpBtn, joined && styles.rsvpBtnOut]}
-            onPress={() => toggleRsvp(msg.id)}
-          >
-            <Text style={[styles.rsvpText, joined && styles.rsvpTextOut]}>
-              {joined ? "I'm out" : "I'm in"}
-            </Text>
-          </TouchableOpacity>
+          {/* You can't turn up to something that's finished, and an "I'm in"
+              button on a past session invites a tap that means nothing. */}
+          {!past && (
+            <TouchableOpacity
+              style={[styles.rsvpBtn, joined && styles.rsvpBtnOut]}
+              onPress={() => toggleRsvp(msg.id)}
+            >
+              <Text style={[styles.rsvpText, joined && styles.rsvpTextOut]}>
+                {joined ? "I'm out" : "I'm in"}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     );
@@ -421,20 +491,22 @@ export default function ChatScreen() {
         </View>
         {/* Meet-ups are the one thing people come back to a chat to FIND, and
             scrolling a transcript for them is the worst way to look. */}
-        {sessionCount > 0 && (
+        {hasAnySession && (
           <TouchableOpacity
             onPress={() => setSessionsOnly((v) => !v)}
             style={[styles.headerBtn, sessionsOnly && styles.headerBtnOn]}
-            accessibilityLabel={sessionsOnly ? 'Show all messages' : 'Show sessions only'}
+            accessibilityLabel={sessionsOnly ? 'Show all messages' : 'Show upcoming sessions'}
           >
             <RivalIcon
               name="calendar"
               size={20}
               color={sessionsOnly ? RivalColors.textPrimary : RivalColors.accentText}
             />
-            <View style={styles.headerBtnCount}>
-              <Text style={styles.headerBtnCountText}>{sessionCount}</Text>
-            </View>
+            {upcomingSessions.length > 0 && (
+              <View style={styles.headerBtnCount}>
+                <Text style={styles.headerBtnCountText}>{upcomingSessions.length}</Text>
+              </View>
+            )}
           </TouchableOpacity>
         )}
       </View>
@@ -442,7 +514,7 @@ export default function ChatScreen() {
       {sessionsOnly && (
         <TouchableOpacity style={styles.filterBanner} onPress={() => setSessionsOnly(false)}>
           <Text style={styles.filterBannerText}>
-            Showing sessions only · <Text style={styles.filterBannerAction}>Show everything</Text>
+            Showing upcoming sessions · <Text style={styles.filterBannerAction}>Show everything</Text>
           </Text>
         </TouchableOpacity>
       )}
@@ -458,10 +530,12 @@ export default function ChatScreen() {
           <View style={styles.centered}><ActivityIndicator color={RivalColors.accentFill} /></View>
         ) : visible.length === 0 ? (
           <View style={styles.centered}>
-            <Text style={styles.emptyTitle}>{sessionsOnly ? 'No sessions yet' : 'No messages yet'}</Text>
+            <Text style={styles.emptyTitle}>
+              {sessionsOnly ? 'No upcoming sessions' : 'No messages yet'}
+            </Text>
             <Text style={styles.emptyBody}>
               {sessionsOnly
-                ? 'When someone plans a meet-up, it shows here.'
+                ? 'Completed sessions stay in the conversation. New ones appear here.'
                 : "Say something — it's how a team stops being a list of names."}
             </Text>
           </View>
@@ -668,6 +742,17 @@ export default function ChatScreen() {
         )}
 
         <View style={[styles.composer, { paddingBottom: keyboardInset > 0 ? 10 : Math.max(insets.bottom, 10) }]}>
+          {/* Planning a meet-up starts in the conversation — "anyone free
+              Saturday?" is where the idea appears, so the button to act on it
+              belongs here, not two screens away on a Sessions tab. */}
+          <TouchableOpacity
+            style={styles.planBtn}
+            onPress={() => setPlanning(true)}
+            accessibilityLabel="Plan an Activity"
+          >
+            <RivalIcon name="calendar" size={19} color={RivalColors.accentText} />
+          </TouchableOpacity>
+
           {/* On web this is a contenteditable div, NOT a TextInput.
               TextInput renders a <textarea>, and iOS Safari attaches its form
               accessory bar (the grey "^ v Done" strip) to every <input> and
@@ -729,6 +814,15 @@ export default function ChatScreen() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      <PlanSessionSheet
+        visible={planning}
+        leagueId={id as string}
+        currentUserId={currentUserId}
+        editing={editingSession}
+        onClose={() => { setPlanning(false); setEditingSession(null); }}
+        onPosted={loadMessages}
+      />
     </SafeAreaView>
   );
 }
@@ -920,10 +1014,15 @@ const styles = StyleSheet.create({
     padding: 14, gap: 4, marginTop: 12,
   },
   sessionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  sessionCardPast: { opacity: 0.55, borderColor: RivalColors.outlineVariant },
   sessionKicker: { fontSize: 11, fontWeight: '800', color: RivalColors.accentText, letterSpacing: 0.7 },
+  sessionKickerPast: { color: RivalColors.textSecondary },
+  sessionEdit: { fontSize: 11, fontWeight: '800', color: RivalColors.textSecondary, textDecorationLine: 'underline' },
+  sessionDone: { fontSize: 11, fontWeight: '700', color: RivalColors.textSecondary, letterSpacing: 0.4 },
   sessionTitle: { fontSize: 15, fontWeight: '700', color: RivalColors.textPrimary },
   sessionWhen: { fontSize: 13, color: RivalColors.textPrimary },
-  sessionWhere: { fontSize: 13, color: RivalColors.textSecondary },
+  sessionWhereRow: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start' },
+  sessionWhere: { fontSize: 13, color: RivalColors.textSecondary, textDecorationLine: 'underline' },
   sessionFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
   sessionGoing: { fontSize: 12, color: RivalColors.textSecondary },
   rsvpBtn: { backgroundColor: RivalColors.accentFill, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 7 },
@@ -943,6 +1042,12 @@ const styles = StyleSheet.create({
   replyBarName: { fontSize: 11, fontWeight: '700', color: RivalColors.accentText },
   replyBarBody: { fontSize: 12, color: RivalColors.textSecondary },
 
+  // Same footprint as the send button, so the composer reads as input flanked
+  // by one action each side rather than a row of mismatched controls.
+  planBtn: {
+    width: COMPOSER_H, height: COMPOSER_H, borderRadius: COMPOSER_H / 2,
+    alignItems: 'center', justifyContent: 'center',
+  },
   composer: {
     flexDirection: 'row', alignItems: 'flex-end', gap: 10,
     paddingHorizontal: 14, paddingTop: 10,
@@ -986,7 +1091,19 @@ const styles = StyleSheet.create({
   // A washed-out 40%-opacity everything read as broken rather than waiting.
   // Muting the fill and the glyph separately keeps it deliberate.
   sendBtnOff: { backgroundColor: RivalColors.surfaceContainerHigh },
-  sendGlyph: { marginLeft: -1 },
+  // Measured off the actual MaterialIcons outline, not eyeballed. In the
+  // 512-unit em the send glyph's ink spans x 43-491, so its bounding box sits
+  // 11 units RIGHT of the advance centre — but its centre of MASS is 55.5
+  // units LEFT of it, because the plane is a wide tail tapering to a thin tip.
+  // The eye centres on mass, not on bounding boxes, which is why a
+  // right-pointing glyph parked at geometric centre always looks like it has
+  // drifted left inside a circle.
+  //
+  // Full centroid correction at fontSize 19 would be +2.1px; that overshoots
+  // and reads as pushed. +1 is a little over half the correction — the same
+  // compromise a play button gets — and lands on a whole pixel so it stays
+  // crisp. The old -1 pushed it the WRONG way, adding to the drift.
+  sendGlyph: { marginLeft: 1 },
 
   emptyTitle: { fontSize: 17, fontWeight: '700', color: RivalColors.textPrimary },
   emptyBody: { fontSize: 14, color: RivalColors.textSecondary, textAlign: 'center', lineHeight: 20 },
