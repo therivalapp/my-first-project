@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase, getAuthUser } from './supabase';
 
 // How many of your teams have chat you haven't read.
 //
@@ -34,7 +34,7 @@ export function invalidateUnreadChats() {
 export async function getUnreadChats(force = false): Promise<UnreadResult> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.result;
 
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await getAuthUser();
   if (!user) return EMPTY;
 
   const { data: memberships } = await supabase

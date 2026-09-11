@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useWindowDimensions } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { Asset } from 'expo-asset';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { confirmAction, notify } from '../lib/notify';
 import { formatDisplayName, formatTeamName, formatRaceName } from '../lib/identity';
 import { formatDuration } from '../lib/format';
@@ -274,7 +274,7 @@ export default function TeamFeedScreen() {
 
   const loadFeed = useCallback(async () => {
     setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setLoading(false); return; }
     setCurrentUserId(user.id);
 
@@ -338,7 +338,10 @@ export default function TeamFeedScreen() {
     // Context queries — run once per refresh, not per page. Races stay a
     // first-page-only set: they are UPCOMING events (race_date >= today), a
     // small forward-looking list rather than a backlog to page through.
-    const [racesRes, liftEntriesRes, insightHistoryRes] = await Promise.all([
+    // The first page of posts only needs the member list, so it loads with the
+    // context queries instead of waiting for them. (fetchActivityPage reads
+    // nothing but memberIds from the context.)
+    const [racesRes, liftEntriesRes, insightHistoryRes, firstPage] = await Promise.all([
       supabase.from('races')
         .select('id, user_id, name, race_date, created_at')
         .in('user_id', memberIds)
@@ -352,6 +355,7 @@ export default function TeamFeedScreen() {
         .gte('started_at', oneYearAgo.toISOString())
         .order('started_at', { ascending: false })
         .limit(500),
+      fetchActivityPage({ memberIds } as FeedContext, null),
     ]);
 
     const insightHistoryByUser: Record<string, InsightActivity[]> = {};
@@ -366,7 +370,7 @@ export default function TeamFeedScreen() {
     const ctx: FeedContext = { memberIds, teamsForUser, teamNameById, nameMap, liftMaxMap, insightHistoryByUser };
     ctxRef.current = ctx;
 
-    const { page, more, nextCursor } = await fetchActivityPage(ctx, null);
+    const { page, more, nextCursor } = firstPage;
     cursorRef.current = nextCursor;
     setHasMore(more);
 
@@ -375,9 +379,10 @@ export default function TeamFeedScreen() {
     (racesRes.data || []).forEach((r: any) => { const p = raceRowToPost(ctx, r); if (p) built.push(p); });
     built.sort(byNewestFirst);
     setItems(built);
-    await loadSocialFor(built, true);
-
+    // Show the posts now; their reactions and comments fill in a moment later
+    // rather than holding the whole feed behind a spinner until they arrive.
     setLoading(false);
+    await loadSocialFor(built, true);
   }, [loadSocialFor]);
 
   // Appends the next page. Guarded on loadingMore/hasMore so the scroll
@@ -656,7 +661,7 @@ function PostCard({
   const myReaction = reactions.find((r) => r.user_id === currentUserId)?.emoji;
   const respectCount = reactions.filter((r) => r.emoji === 'respect').length;
   const inspiredCount = reactions.filter((r) => r.emoji === 'inspired').length;
-  const displayedName = post.userId === currentUserId ? 'You' : post.name;
+  const displayedName = post.name;
   const initials = post.name.slice(0, 2).toUpperCase();
 
   let badge: { icon: RivalIconName; label: string; color: string } | null = null;
@@ -684,10 +689,11 @@ function PostCard({
       )}
 
       <View style={styles.postHeader}>
-        <TouchableOpacity onPress={() => router.push(`/profile?userId=${post.userId}` as any)} style={[styles.postAvatar, { backgroundColor: tint.bg, borderColor: tint.color }]}>
+        <TouchableOpacity onPress={() => router.push(`/stats?userId=${post.userId}` as any)} style={[styles.postAvatar, { backgroundColor: tint.bg, borderColor: tint.color }]}>
           {avatarUrl ? <Image source={{ uri: avatarUrl }} style={styles.postAvatarImg} /> : <Text style={[styles.postAvatarText, { color: tint.color }]}>{initials}</Text>}
         </TouchableOpacity>
-        <View>
+        {/* The name opens their profile too, not just the small avatar. */}
+        <TouchableOpacity style={{ flex: 1, minWidth: 0 }} activeOpacity={0.7} onPress={() => router.push(`/stats?userId=${post.userId}` as any)}>
           <Text style={styles.postName}>{displayedName}</Text>
           <Text style={styles.postMeta}>
             {post.kind === 'race' ? 'Signed up for a race' : (post.activityName || post.activityType)} · {timeAgo(post.ts)}
@@ -695,7 +701,7 @@ function PostCard({
               <> · <Text style={styles.postTeamTag}>{primaryTeamName}{extraTeamCount > 0 ? ` +${extraTeamCount}` : ''}</Text></>
             ) : null}
           </Text>
-        </View>
+        </TouchableOpacity>
         {post.kind === 'activity' && post.userId === currentUserId && (
           <View style={styles.postMoreWrap}>
             <TouchableOpacity style={styles.postMoreBtn} onPress={() => setMenuOpen((v) => !v)} disabled={deleting}>
@@ -783,13 +789,13 @@ function PostCard({
 
       <View style={styles.reactionRow}>
         <TouchableOpacity style={styles.reactionItem} onPress={() => onReact('respect')}>
-          <RivalIcon name={myReaction === 'respect' ? 'star' : 'starOutline'} size={15} color={myReaction === 'respect' ? RivalColors.accentText : RivalColors.onSurface} />
-          <Text style={[styles.reactionLabel, myReaction === 'respect' && { color: RivalColors.accentText }]}>Respect</Text>
+          <RivalIcon name={myReaction === 'respect' ? 'star' : 'starOutline'} size={15} color={myReaction === 'respect' ? RivalColors.accentGold : RivalColors.onSurface} />
+          <Text style={[styles.reactionLabel, myReaction === 'respect' && { color: RivalColors.accentGold }]}>Respect</Text>
           <Text style={[styles.reactionCount, respectCount > 0 && styles.reactionCountActive]}>{respectCount}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.reactionItem} onPress={() => onReact('inspired')}>
-          <RivalIcon name="bolt" size={15} color={myReaction === 'inspired' ? RivalColors.accentText : RivalColors.onSurface} />
-          <Text style={[styles.reactionLabel, myReaction === 'inspired' && { color: RivalColors.accentText }]}>Inspired</Text>
+          <RivalIcon name="bolt" size={15} color={myReaction === 'inspired' ? RivalColors.accentGold : RivalColors.onSurface} />
+          <Text style={[styles.reactionLabel, myReaction === 'inspired' && { color: RivalColors.accentGold }]}>Inspired</Text>
           <Text style={[styles.reactionCount, inspiredCount > 0 && styles.reactionCountActive]}>{inspiredCount}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.commentCount} onPress={onToggleComments}>
@@ -802,7 +808,7 @@ function PostCard({
         <View style={styles.commentsBlock}>
           {comments.map((c) => (
             <View key={c.id} style={styles.commentRow}>
-              <Text style={styles.commentAuthor}>{c.user_id === currentUserId ? 'You' : (nameMap[c.user_id] ?? 'Athlete')}</Text>
+              <Text style={styles.commentAuthor}>{nameMap[c.user_id] ?? 'Athlete'}</Text>
               <Text style={styles.commentBody}>{c.body}</Text>
             </View>
           ))}

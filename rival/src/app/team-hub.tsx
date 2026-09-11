@@ -19,10 +19,10 @@
 import { useEffect, useState } from 'react';
 import { Asset } from 'expo-asset';
 import { router, useLocalSearchParams } from 'expo-router';
-import { Image, ImageBackground, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Image, ImageBackground, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { confirmAction, notify } from '../lib/notify';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 import { formatDuration } from '../lib/format';
@@ -30,9 +30,13 @@ import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone }
 import { RivalAvatar } from '../components/rival/RivalAvatar';
 import { RivalIcon, RivalIconName, activityIconName } from '../components/rival/RivalIcon';
 import { RivalBackButton } from '../components/rival/RivalBackButton';
+import { RivalTopNav } from '../components/rival/RivalTopNav';
 import { PlanSessionSheet, EditableSession } from '../components/rival/PlanSessionSheet';
-import { openInMaps } from '../lib/maps';
-import { formatAttendees } from '../lib/attendees';
+import { copyText } from '../lib/clipboard';
+import { SessionCard } from '../components/rival/SessionCard';
+import { TeamChallengesTab, ChallengeTeammateSheet } from '../components/rival/team/TeamChallengesTab';
+import { WeeklyStandings } from '../components/rival/team/WeeklyStandings';
+import { EncourageSheet, loadEncouragedToday } from '../components/rival/team/EncourageSheet';
 import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
 import { matchCanonicalLift } from './scan-workout';
 
@@ -111,7 +115,7 @@ function goalValue(a: { effort_score: number | null; distance_meters: number | n
 }
 
 type League = {
-  id: string; name: string; created_at: string; logo_url: string | null;
+  id: string; name: string; created_at: string; logo_url: string | null; invite_code: string | null;
   goal_metric: GoalMetric | null; goal_target: number | null; goal_target_date: string | null;
 };
 type Member = { user_id: string; role: string; users: { display_name: string | null; avatar_url: string | null } };
@@ -247,6 +251,16 @@ export default function TeamHub() {
   const [boardPosts, setBoardPosts] = useState<BoardPost[]>([]);
   const [boardComposeOpen, setBoardComposeOpen] = useState(false);
   const [boardTitleDraft, setBoardTitleDraft] = useState('');
+  // The note open in the full-size viewer, and its edit state. Notes open on
+  // tap rather than carrying pin/delete icons: 13px icons in a card corner are
+  // too small to hit reliably with a thumb.
+  const [openNoteId, setOpenNoteId] = useState<string | null>(null);
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteTitleDraft, setNoteTitleDraft] = useState('');
+  const [noteBodyDraft, setNoteBodyDraft] = useState('');
+  const [savingNote, setSavingNote] = useState(false);
+  // The open note shows its two latest comments; the comment count expands the rest.
+  const [noteCommentsExpanded, setNoteCommentsExpanded] = useState(false);
   const [boardBodyDraft, setBoardBodyDraft] = useState('');
   const [postingBoard, setPostingBoard] = useState(false);
   const [boardError, setBoardError] = useState('');
@@ -261,6 +275,25 @@ export default function TeamHub() {
   // appear when there's history to see even though nothing is coming up.
   const [sessionTotal, setSessionTotal] = useState(0);
   const [planning, setPlanning] = useState(false);
+  // Members tab: who you've encouraged today, and who an Encourage / Challenge
+  // sheet is open for. Challenges tab reloads when a challenge is sent from
+  // the Members tab (challengesRefresh).
+  const [encouragedIds, setEncouragedIds] = useState<Set<string>>(new Set());
+  const [encourageTarget, setEncourageTarget] = useState<{ id: string; name: string } | null>(null);
+  const [challengeTarget, setChallengeTarget] = useState<{ id: string; name: string } | null>(null);
+  const [challengesRefresh, setChallengesRefresh] = useState(0);
+  const [codeCopied, setCodeCopied] = useState(false);
+  useEffect(() => {
+    if (currentUserId) loadEncouragedToday(currentUserId).then(setEncouragedIds);
+  }, [currentUserId]);
+  // Which session's location was just copied, so its card can confirm it.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  async function copyLocation(id: string, text: string) {
+    if (!(await copyText(text))) return;
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1600);
+  }
   const [editingSession, setEditingSession] = useState<EditableSession | null>(null);
   const [feedActivity, setFeedActivity] = useState<ActivityRow[]>([]);
   const [reactionsMap, setReactionsMap] = useState<Record<string, Array<{ user_id: string; emoji: string }>>>({});
@@ -325,20 +358,59 @@ export default function TeamHub() {
     }
   }
 
+  // Everything this page needs, in as few round trips as possible. It used to
+  // be a chain of about nine requests each waiting on the one before —
+  // members, then the feed, then sessions, then reactions, then challenge
+  // totals, then this week, then the board, then the board's reactions —
+  // although most only need the member list. Now it's three rounds: who's in
+  // the team, everything that depends only on that (all at once), then the
+  // reactions and comments for whatever the feed and board returned.
+  // Another member's profile is their stats page. /profile is your own
+  // settings and redirects for anyone else, which is why tapping a teammate
+  // here used to go nowhere useful.
+  function openProfile(userId: string) {
+    router.push(`/stats?userId=${userId}` as any);
+  }
+
+  async function copyInviteCode() {
+    if (!league?.invite_code) return;
+    if (!(await copyText(league.invite_code))) return;
+    setCodeCopied(true);
+    setTimeout(() => setCodeCopied(false), 1800);
+  }
+
+  async function leaveTeam() {
+    if (!league) return;
+    const last = members.length <= 1;
+    const ok = await confirmAction({
+      title: `Leave ${formatTeamName(league.name)}?`,
+      message: last
+        ? "You're the last member. Leaving will permanently delete the team, including its chat, posts and challenge history."
+        : 'You can rejoin later with the invite code.',
+      confirmLabel: last ? 'Leave and delete' : 'Leave team',
+      destructive: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.rpc('leave_league', { p_league_id: id });
+    if (error) { notify("Couldn't leave the team", error.message); return; }
+    router.replace('/team-feed');
+  }
+
   async function load() {
     setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    const [{ data: { user } }, { data: leagueData }, { data: membersData }] = await Promise.all([
+      getAuthUser(),
+      supabase.from('leagues').select('id, name, created_at, logo_url, invite_code, goal_metric, goal_target, goal_target_date').eq('id', id).single(),
+      supabase
+        .from('league_members')
+        .select('user_id, role, users(display_name, avatar_url)')
+        .eq('league_id', id)
+        .eq('status', 'active'),
+    ]);
     if (user) setCurrentUserId(user.id);
-
-    const { data: leagueData } = await supabase.from('leagues').select('id, name, created_at, logo_url, goal_metric, goal_target, goal_target_date').eq('id', id).single();
     if (!leagueData) { setLoading(false); return; }
     setLeague(leagueData as League);
 
-    const { data: membersData } = await supabase
-      .from('league_members')
-      .select('user_id, role, users(display_name, avatar_url)')
-      .eq('league_id', id)
-      .eq('status', 'active');
     const memberList = (membersData || []) as unknown as Member[];
     setMembers(memberList);
 
@@ -351,8 +423,16 @@ export default function TeamHub() {
     if (memberIds.length > 0) {
       const oneYearAgo = new Date();
       oneYearAgo.setDate(oneYearAgo.getDate() - 365);
+      const { start: weekStart, end: weekEnd } = getWeekWindow();
 
-      const [{ data: activities }, { data: liftEntries }, { data: insightHistory }] = await Promise.all([
+      const [
+        { data: activities },
+        { data: liftEntries },
+        { data: insightHistory },
+        { data: sinceCreationActivities },
+        { data: weeklyActivities },
+        { data: board },
+      ] = await Promise.all([
         supabase
           .from('activities')
           .select('id, user_id, name, activity_type, started_at, distance_meters, effort_score, duration_seconds, exercises, notes, photo_url')
@@ -366,6 +446,31 @@ export default function TeamHub() {
           .gte('started_at', oneYearAgo.toISOString())
           .order('started_at', { ascending: false })
           .limit(500),
+        // Fetched unconditionally (not just when a Team Challenge exists) so it
+        // can double as the "All Time" standings source when there isn't one.
+        supabase
+          .from('activities')
+          .select('user_id, activity_type, effort_score, distance_meters, elevation_meters, duration_seconds')
+          .in('user_id', memberIds)
+          .gte('started_at', leagueData.created_at),
+        // Standings should still show even without an active Team Challenge —
+        // ranked by this week's Effort in that case, same basis as the rest of
+        // the app's weekly leaderboards.
+        supabase
+          .from('activities')
+          .select('user_id, activity_type, effort_score, distance_meters, elevation_meters, duration_seconds')
+          .in('user_id', memberIds)
+          .gte('started_at', weekStart.toISOString())
+          .lt('started_at', weekEnd.toISOString()),
+        supabase
+          .from('league_messages')
+          .select('id, user_id, title, body, pinned, created_at')
+          .eq('league_id', id)
+          .eq('kind', 'board')
+          .order('pinned', { ascending: false })
+          .order('created_at', { ascending: false })
+          .limit(20),
+        loadSessions(),
       ]);
 
       const maxMap = new Map<string, number>();
@@ -397,14 +502,33 @@ export default function TeamHub() {
       setFeedActivity(feedList);
       setRecentActivity(feedList.slice(0, 8));
 
-      await loadSessions();
+      const rows = (sinceCreationActivities || []) as GoalActivityRow[];
+      setGoalActivitiesRaw(rows);
+      if (leagueData.goal_metric) {
+        let total = 0;
+        rows.forEach((a) => { total += goalValue(a, leagueData.goal_metric as GoalMetric); });
+        setGoalProgress(Math.round(total * 10) / 10);
+      } else {
+        setGoalProgress(0);
+      }
 
+      setWeeklyActivitiesRaw((weeklyActivities || []) as GoalActivityRow[]);
+
+      const boardList = (board || []) as BoardPost[];
+      setBoardPosts(boardList);
+
+      // Reactions and comments for the feed AND the board, together.
       const feedIds = feedList.map(a => a.id);
+      const boardIds = boardList.map(p => p.id);
+      const none = Promise.resolve({ data: [] as any[] });
+      const [reactionsRes, commentsRes, boardReactionsRes, boardCommentsRes] = await Promise.all([
+        feedIds.length ? supabase.from('feed_reactions').select('target_id, user_id, emoji').eq('target_type', 'activity').in('target_id', feedIds) : none,
+        feedIds.length ? supabase.from('feed_comments').select('id, target_id, user_id, body, created_at').eq('target_type', 'activity').in('target_id', feedIds).order('created_at', { ascending: true }) : none,
+        boardIds.length ? supabase.from('feed_reactions').select('target_id, user_id, emoji').eq('target_type', 'board').in('target_id', boardIds) : none,
+        boardIds.length ? supabase.from('feed_comments').select('id, target_id, user_id, body, created_at').eq('target_type', 'board').in('target_id', boardIds).order('created_at', { ascending: true }) : none,
+      ]);
+
       if (feedIds.length > 0) {
-        const [reactionsRes, commentsRes] = await Promise.all([
-          supabase.from('feed_reactions').select('target_id, user_id, emoji').eq('target_type', 'activity').in('target_id', feedIds),
-          supabase.from('feed_comments').select('id, target_id, user_id, body, created_at').eq('target_type', 'activity').in('target_id', feedIds).order('created_at', { ascending: true }),
-        ]);
         const newReactionsMap: Record<string, Array<{ user_id: string; emoji: string }>> = {};
         (reactionsRes.data || []).forEach((r: any) => {
           const key = feedTargetKey(r.target_id);
@@ -419,53 +543,7 @@ export default function TeamHub() {
         setCommentsMap(newCommentsMap);
       }
 
-      // Fetched unconditionally (not just when a Team Challenge exists) so it
-      // can double as the "All Time" standings source when there isn't one.
-      const { data: sinceCreationActivities } = await supabase
-        .from('activities')
-        .select('user_id, activity_type, effort_score, distance_meters, elevation_meters, duration_seconds')
-        .in('user_id', memberIds)
-        .gte('started_at', leagueData.created_at);
-      const rows = (sinceCreationActivities || []) as GoalActivityRow[];
-      setGoalActivitiesRaw(rows);
-
-      if (leagueData.goal_metric) {
-        let total = 0;
-        rows.forEach((a) => { total += goalValue(a, leagueData.goal_metric as GoalMetric); });
-        setGoalProgress(Math.round(total * 10) / 10);
-      } else {
-        setGoalProgress(0);
-      }
-
-      // Standings should still show even without an active Team Challenge —
-      // ranked by this week's Effort in that case, same basis as the rest of
-      // the app's weekly leaderboards.
-      const { start: weekStart, end: weekEnd } = getWeekWindow();
-      const { data: weeklyActivities } = await supabase
-        .from('activities')
-        .select('user_id, activity_type, effort_score, distance_meters, elevation_meters, duration_seconds')
-        .in('user_id', memberIds)
-        .gte('started_at', weekStart.toISOString())
-        .lt('started_at', weekEnd.toISOString());
-      setWeeklyActivitiesRaw((weeklyActivities || []) as GoalActivityRow[]);
-
-      const { data: board } = await supabase
-        .from('league_messages')
-        .select('id, user_id, title, body, pinned, created_at')
-        .eq('league_id', id)
-        .eq('kind', 'board')
-        .order('pinned', { ascending: false })
-        .order('created_at', { ascending: false })
-        .limit(20);
-      const boardList = (board || []) as BoardPost[];
-      setBoardPosts(boardList);
-
-      const boardIds = boardList.map(p => p.id);
       if (boardIds.length > 0) {
-        const [boardReactionsRes, boardCommentsRes] = await Promise.all([
-          supabase.from('feed_reactions').select('target_id, user_id, emoji').eq('target_type', 'board').in('target_id', boardIds),
-          supabase.from('feed_comments').select('id, target_id, user_id, body, created_at').eq('target_type', 'board').in('target_id', boardIds).order('created_at', { ascending: true }),
-        ]);
         const newBoardReactions: Record<string, Array<{ user_id: string; emoji: string }>> = {};
         (boardReactionsRes.data || []).forEach((r: any) => {
           const key = boardTargetKey(r.target_id);
@@ -551,9 +629,51 @@ export default function TeamHub() {
     if (inserted) setBoardCommentsMap(prev => ({ ...prev, [key]: [...(prev[key] || []), inserted] }));
   }
 
+  function openNote(postId: string) {
+    setOpenNoteId(postId);
+    setEditingNote(false);
+    setNoteCommentsExpanded(false);
+  }
+
+  function closeNote() {
+    setOpenNoteId(null);
+    setEditingNote(false);
+  }
+
+  function startEditingNote(post: BoardPost) {
+    setNoteTitleDraft(post.title ?? '');
+    setNoteBodyDraft(post.body);
+    setEditingNote(true);
+  }
+
+  async function saveNoteEdit() {
+    if (!openNoteId || savingNote) return;
+    const title = noteTitleDraft.trim();
+    const body = noteBodyDraft.trim();
+    if (!body) {
+      notify('Add some text', 'A note needs a message before it can be saved.');
+      return;
+    }
+    setSavingNote(true);
+    const { error } = await supabase
+      .from('league_messages')
+      .update({ title: title || null, body })
+      .eq('id', openNoteId);
+    setSavingNote(false);
+    if (error) {
+      notify("Couldn't save that note", error.message);
+      return;
+    }
+    setBoardPosts(prev => prev.map(p => (p.id === openNoteId ? { ...p, title: title || null, body } : p)));
+    setEditingNote(false);
+  }
+
   async function togglePinBoardPost(postId: string, currentlyPinned: boolean) {
     const { error } = await supabase.from('league_messages').update({ pinned: !currentlyPinned }).eq('id', postId);
-    if (error) return;
+    if (error) {
+      notify(currentlyPinned ? "Couldn't unpin that note" : "Couldn't pin that note", error.message);
+      return;
+    }
     setBoardPosts(prev =>
       prev.map(p => (p.id === postId ? { ...p, pinned: !currentlyPinned } : p))
         .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
@@ -561,9 +681,20 @@ export default function TeamHub() {
   }
 
   async function deleteBoardPost(postId: string) {
+    const ok = await confirmAction({
+      title: 'Delete this note?',
+      message: 'It will be removed for the whole team.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     const { error } = await supabase.from('league_messages').delete().eq('id', postId);
-    if (error) return;
+    if (error) {
+      notify("Couldn't delete that note", error.message);
+      return;
+    }
     setBoardPosts(prev => prev.filter(p => p.id !== postId));
+    closeNote();
   }
 
   function daysUntil(dateStr: string): number {
@@ -693,8 +824,12 @@ export default function TeamHub() {
   return (
     <View style={styles.root}>
       <SafeAreaView edges={['top']} style={styles.safeArea}>
+        {/* Bottom tab pill only (hideBar): the hero owns the top of this page
+            with its own back and settings buttons. You arrive here from the
+            Teams tab, so Teams stays lit and the tabs stay one tap away. */}
+        <RivalTopNav active="teams" hideBar />
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-          <HeroPhoto style={styles.hero}>
+          <HeroPhoto style={[styles.hero, activeTab === 'Posts' && styles.heroFit]}>
             <View style={[styles.heroScrim, heroScrimWeb]} />
 
             <View style={styles.header}>
@@ -726,16 +861,28 @@ export default function TeamHub() {
               ))}
             </View>
 
-            {hasGoal ? (
+            {/* The Team Challenge ring belongs to Overview, not Posts. On Posts
+                this falls through to the Team Board below — which teams WITH a
+                challenge never saw before, because the ring took this slot on
+                every tab. */}
+            {activeTab !== 'Posts' && hasGoal ? (
               <>
                 <View style={styles.heroTextBlock}>
                   <Text style={styles.eyebrow}>Team Challenge</Text>
                   <Text style={styles.heroTitle}>{GOAL_METRIC_LABEL[league.goal_metric!]}</Text>
                   <Text style={styles.heroSub}>Since {new Date(league.created_at).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })} · Due {new Date(league.goal_target_date!).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}</Text>
                 </View>
-                <View style={styles.ringWrap}>
+                {/* For admins the ring itself opens the challenge for editing —
+                    no separate button. Everyone else sees it as display only. */}
+                <TouchableOpacity
+                  style={styles.ringWrap}
+                  activeOpacity={0.85}
+                  disabled={!isAdmin}
+                  onPress={() => router.push({ pathname: '/create-team-challenge', params: { id } })}
+                  accessibilityLabel={isAdmin ? 'Edit Team Challenge' : undefined}
+                >
                   <ChallengeRing pct={pct} value={Math.round(goalProgress)} unit={`/ ${target.toLocaleString()} ${unit}`} />
-                </View>
+                </TouchableOpacity>
                 <View style={styles.ringMetaRow}>
                   <Text style={styles.ringMeta}><Text style={styles.ringMetaBold}>{Math.round(pct * 100)}%</Text> complete</Text>
                   <Text style={styles.ringMeta}><Text style={styles.ringMetaBold}>{daysLeft > 0 ? daysLeft : 0}</Text> days left</Text>
@@ -791,28 +938,23 @@ export default function TeamHub() {
                       const key = boardTargetKey(p.id);
                       const reactions = boardReactionsMap[key] || [];
                       const comments = boardCommentsMap[key] || [];
-                      const iLiked = currentUserId ? reactions.some(r => r.user_id === currentUserId) : false;
-                      const isExpanded = expandedBoardComments.has(key);
                       return (
-                        <View key={p.id} style={[styles.boardNote, warmCardWeb]}>
+                        // The whole card is the button. Pin, edit, delete, like
+                        // and comments all live in the full-size viewer it opens.
+                        <TouchableOpacity
+                          key={p.id}
+                          activeOpacity={0.85}
+                          onPress={() => openNote(p.id)}
+                          style={[styles.boardNote, warmCardWeb]}
+                          accessibilityLabel={`Open note from ${name}`}
+                        >
                           <View style={[styles.boardPin, { backgroundColor: p.pinned ? RivalColors.accentGold : BOARD_PIN_COLORS[i % BOARD_PIN_COLORS.length] }]} />
                           <View style={styles.boardNoteHead}>
                             <RivalAvatar uri={memberAvatar(p.user_id)} name={name} size={24} />
                             <View style={{ flex: 1, minWidth: 0 }}>
-                              <Text style={styles.boardNoteName} numberOfLines={1}>{p.user_id === currentUserId ? 'You' : name}</Text>
+                              <Text style={styles.boardNoteName} numberOfLines={1}>{name}</Text>
                               <Text style={styles.boardNoteTime}>{timeAgo(p.created_at)}</Text>
                             </View>
-                            {/* Any teammate can pin. If you're on the team,
-                                you're on the team — the chat doesn't need a
-                                captain deciding what the rest get to see. */}
-                            <TouchableOpacity onPress={() => togglePinBoardPost(p.id, p.pinned)}>
-                              <RivalIcon name="pin" size={13} color={p.pinned ? RivalColors.accentGold : 'rgba(255,255,255,0.3)'} />
-                            </TouchableOpacity>
-                            {p.user_id === currentUserId && (
-                              <TouchableOpacity onPress={() => deleteBoardPost(p.id)}>
-                                <RivalIcon name="delete" size={13} color="rgba(255,255,255,0.3)" />
-                              </TouchableOpacity>
-                            )}
                           </View>
                           {!!p.title && (
                             <>
@@ -820,53 +962,28 @@ export default function TeamHub() {
                               <View style={styles.boardNoteTitleRule} />
                             </>
                           )}
-                          <Text style={styles.boardNoteBody}>{p.body}</Text>
+                          {/* A preview: the full note opens on tap. */}
+                          <Text style={styles.boardNoteBody} numberOfLines={4}>{p.body}</Text>
                           <View style={styles.boardNoteFoot}>
-                            <TouchableOpacity style={styles.boardNoteStat} onPress={() => toggleBoardComments(key)}>
+                            <View style={styles.boardNoteStat}>
                               <RivalIcon name="chat" size={13} color="rgba(255,255,255,0.5)" />
                               <Text style={styles.boardNoteStatText}>{comments.length}</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity style={styles.boardNoteStat} onPress={() => toggleBoardLike(p.id)}>
-                              <RivalIcon name={iLiked ? 'star' : 'starOutline'} size={13} color={iLiked ? RivalColors.accentGold : 'rgba(255,255,255,0.5)'} />
-                              <Text style={[styles.boardNoteStatText, iLiked && { color: RivalColors.accentText }]}>{reactions.length}</Text>
-                            </TouchableOpacity>
-                          </View>
-                          {isExpanded && (
-                            <View style={styles.boardCommentsBlock}>
-                              {comments.map(c => (
-                                <View key={c.id} style={styles.boardCommentRow}>
-                                  <Text style={styles.boardCommentAuthor}>{memberName(c.user_id)}</Text>
-                                  <Text style={styles.boardCommentBody}>{c.body}</Text>
-                                </View>
-                              ))}
-                              <View style={styles.boardCommentInputRow}>
-                                <TextInput
-                                  style={styles.boardCommentInput}
-                                  value={boardCommentDrafts[key] || ''}
-                                  onChangeText={(v) => setBoardCommentDrafts(prev => ({ ...prev, [key]: v }))}
-                                  placeholder="Comment…"
-                                  placeholderTextColor="rgba(255,255,255,0.35)"
-                                  onSubmitEditing={() => postBoardComment(p.id)}
-                                />
-                                <TouchableOpacity onPress={() => postBoardComment(p.id)} disabled={!(boardCommentDrafts[key] || '').trim()}>
-                                  <RivalIcon name="chevronRight" size={16} color={RivalColors.accentText} />
-                                </TouchableOpacity>
-                              </View>
                             </View>
-                          )}
-                        </View>
+                            <View style={styles.boardNoteStat}>
+                              <RivalIcon name="starOutline" size={13} color="rgba(255,255,255,0.5)" />
+                              <Text style={styles.boardNoteStatText}>{reactions.length}</Text>
+                            </View>
+                          </View>
+                        </TouchableOpacity>
                       );
                     })}
                   {!boardComposeOpen && (
                     <TouchableOpacity style={styles.boardAddNote} onPress={() => setBoardComposeOpen(true)}>
-                      <RivalIcon name="add" size={20} color="rgba(255,255,255,0.6)" />
-                      <Text style={styles.boardAddNoteText}>Add Note</Text>
+                      <RivalIcon name="add" size={14} color="rgba(255,255,255,0.6)" />
+                      <Text style={styles.boardAddNoteText}>Pin Note</Text>
                     </TouchableOpacity>
                   )}
                 </View>
-                {boardPosts.length === 0 && !boardComposeOpen && (
-                  <Text style={styles.boardEmpty}>Nothing posted yet — tap Add Note to share something the team should know.</Text>
-                )}
               </View>
             ) : (
               <View style={styles.heroTextBlockNoGoal}>
@@ -996,7 +1113,7 @@ export default function TeamHub() {
                           <TouchableOpacity
                             key={c.userId}
                             style={[styles.contribRow, i === Math.min(4, goalContributors.length - 1) && { borderBottomWidth: 0 }]}
-                            onPress={() => router.push(`/profile?userId=${c.userId}` as any)}
+                            onPress={() => router.push(`/stats?userId=${c.userId}` as any)}
                           >
                             <Text style={styles.rankNum}>{i + 1}</Text>
                             <View style={styles.avatarWrap}>
@@ -1009,7 +1126,7 @@ export default function TeamHub() {
                             </View>
                             <View style={{ flex: 1, minWidth: 0 }}>
                               <Text style={[styles.contribName, i === 0 && styles.gold, c.userId === currentUserId && styles.accentText]}>
-                                {name}{c.userId === currentUserId ? ' (you)' : ''}
+                                {name}
                               </Text>
                               <View style={styles.barBg}>
                                 <View style={[styles.barFill, barFillWeb, { width: `${(c.value / topValue) * 100}%` }]} />
@@ -1022,6 +1139,18 @@ export default function TeamHub() {
                     </View>
                   </>
                 )}
+
+                {/* The way into Plan Your Week. It used to live only on the old
+                    team page, under its leaderboard — without this link the
+                    page would be unreachable once that page is retired. */}
+                <TouchableOpacity style={[styles.planWeekLink, warmCardWeb]} onPress={() => router.push('/plan')}>
+                  <RivalIcon name="stats" size={18} color={RivalColors.accentText} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.planWeekTitle}>Plan your week</Text>
+                    <Text style={styles.planWeekSub}>See where you'll finish in the standings.</Text>
+                  </View>
+                  <RivalIcon name="chevronRight" size={18} color={RivalColors.textSecondary} />
+                </TouchableOpacity>
 
                 {/* Above Recent Activity on purpose: what the team is about to
                     do is more actionable than what it already did. */}
@@ -1036,55 +1165,20 @@ export default function TeamHub() {
                   <Text style={styles.emptyText}>No sessions planned yet.</Text>
                 ) : (
                   <View style={{ gap: 10 }}>
-                    {sessions.map((sn) => {
-                      const going = sessionRsvps[sn.id] || [];
-                      const joined = going.includes(currentUserId);
-                      return (
-                        <View key={sn.id} style={[styles.card, styles.sessionCard]}>
-                          <View style={{ flex: 1 }}>
-                            <View style={styles.sessionKickerRow}>
-                              <Text style={styles.sessionKicker}>{(sn.activity_type ?? 'Session').toUpperCase()}</Text>
-                              {/* Only the person who planned it. Anyone else
-                                  changing the time out from under the team
-                                  would be a worse problem than a stale one. */}
-                              {sn.user_id === currentUserId && (
-                                <TouchableOpacity
-                                  onPress={() => { setEditingSession(sn); setPlanning(true); }}
-                                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                >
-                                  <Text style={styles.sessionEdit}>Edit</Text>
-                                </TouchableOpacity>
-                              )}
-                            </View>
-                            {!!sn.body && <Text style={styles.sessionTitle}>{sn.body}</Text>}
-                            {!!sn.scheduled_at && (
-                              <Text style={styles.sessionWhen}>
-                                {new Date(sn.scheduled_at).toLocaleString('en-NZ', {
-                                  weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
-                                })}
-                              </Text>
-                            )}
-                            <Text style={styles.sessionMeta}>
-                              {!!sn.location && (
-                                <Text style={styles.sessionPlace} onPress={() => openInMaps(sn.location!)}>
-                                  {sn.location}
-                                </Text>
-                              )}
-                              {!!sn.location && ' · '}
-                              {formatAttendees(going, currentUserId, memberName)}
-                            </Text>
-                          </View>
-                          <TouchableOpacity
-                            style={[styles.rsvpBtn, joined && styles.rsvpBtnOut]}
-                            onPress={() => toggleSessionRsvp(sn.id)}
-                          >
-                            <Text style={[styles.rsvpText, joined && styles.rsvpTextOut]}>
-                              {joined ? "I'm out" : "I'm in"}
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      );
-                    })}
+                    {sessions.map((sn) => (
+                      <SessionCard
+                        key={sn.id}
+                        session={sn}
+                        attendeeIds={sessionRsvps[sn.id] || []}
+                        currentUserId={currentUserId}
+                        nameFor={memberName}
+                        compact
+                        locationCopied={copiedId === sn.id}
+                        onCopyLocation={() => copyLocation(sn.id, sn.location ?? '')}
+                        onEdit={() => { setEditingSession(sn); setPlanning(true); }}
+                        onToggleRsvp={() => toggleSessionRsvp(sn.id)}
+                      />
+                    ))}
                   </View>
                 )}
 
@@ -1096,7 +1190,7 @@ export default function TeamHub() {
                 {sessionTotal > sessions.length && (
                   <TouchableOpacity
                     style={styles.seeAllRow}
-                    onPress={() => router.push({ pathname: '/league', params: { id, tab: 'sessions' } })}
+                    onPress={() => router.push({ pathname: '/team-sessions', params: { id } })}
                   >
                     <Text style={styles.seeAllText}>
                       See all {sessionTotal} planned {sessionTotal === 1 ? 'Activity' : 'Activities'}
@@ -1120,7 +1214,7 @@ export default function TeamHub() {
                           <RivalAvatar uri={memberAvatar(a.user_id)} name={name} size={34} />
                           <View>
                             <Text style={styles.activityText}>
-                              <Text style={styles.activityName}>{a.user_id === currentUserId ? 'You' : name}</Text> logged {a.name || a.activity_type}{dist ? ` · ${dist}` : ''}
+                              <Text style={styles.activityName}>{name}</Text> logged {a.name || a.activity_type}{dist ? ` · ${dist}` : ''}
                             </Text>
                             <Text style={styles.activityTime}>{timeAgo(a.started_at)}</Text>
                           </View>
@@ -1164,41 +1258,216 @@ export default function TeamHub() {
             )}
 
             {activeTab === 'Challenges' && (
-              <TouchableOpacity style={styles.redirectCard} onPress={() => router.push({ pathname: '/league', params: { id, tab: 'challenges' } })}>
-                <RivalIcon name="race" size={20} color={RivalColors.accentText} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.redirectTitle}>1v1 Challenges</Text>
-                  <Text style={styles.redirectSub}>Open in the full team page to send or respond to a challenge.</Text>
-                </View>
-                <RivalIcon name="chevronRight" size={18} color={RivalColors.textSecondary} />
-              </TouchableOpacity>
+              <TeamChallengesTab
+                leagueId={id as string}
+                teamName={formatTeamName(league.name)}
+                currentUserId={currentUserId}
+                isAdmin={isAdmin}
+                nameFor={memberName}
+                refreshKey={challengesRefresh}
+              />
             )}
 
             {activeTab === 'Members' && (
-              <View style={[styles.card, warmCardWeb]}>
-                {members.map((m, i) => {
-                  const name = formatDisplayName(m.users);
-                  return (
-                    <TouchableOpacity
-                      key={m.user_id}
-                      style={[styles.activityRow, i === members.length - 1 && { borderBottomWidth: 0 }]}
-                      onPress={() => router.push(`/profile?userId=${m.user_id}` as any)}
-                    >
-                      <RivalAvatar uri={m.users?.avatar_url} name={name} size={34} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.activityText}>
-                          <Text style={styles.activityName}>{m.user_id === currentUserId ? 'You' : name}</Text>
-                        </Text>
-                        {m.role === 'admin' && <Text style={styles.activityTime}>Admin</Text>}
-                      </View>
+              <View style={{ gap: 18 }}>
+                {!!league.invite_code && (
+                  <View style={[styles.inviteCard, warmCardWeb]}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.inviteLabel}>INVITE CODE</Text>
+                      <Text style={styles.inviteCode} selectable>{league.invite_code}</Text>
+                      <Text style={styles.inviteSub}>Share it so teammates can join.</Text>
+                    </View>
+                    <TouchableOpacity style={styles.inviteBtn} onPress={copyInviteCode} accessibilityLabel="Copy invite code">
+                      <Text style={styles.inviteBtnText}>{codeCopied ? 'Copied' : 'Copy'}</Text>
                     </TouchableOpacity>
-                  );
-                })}
+                  </View>
+                )}
+
+                <WeeklyStandings
+                  members={members}
+                  currentUserId={currentUserId}
+                  encouragedIds={encouragedIds}
+                  onOpenProfile={openProfile}
+                  onEncourage={(uid, name) => setEncourageTarget({ id: uid, name })}
+                  onChallenge={(uid, name) => setChallengeTarget({ id: uid, name })}
+                />
+
+                <TouchableOpacity style={styles.leaveBtn} onPress={leaveTeam}>
+                  <Text style={styles.leaveText}>Leave Team</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
         </ScrollView>
       </SafeAreaView>
+
+      {(() => {
+        const note = boardPosts.find(bp => bp.id === openNoteId);
+        if (!note) return null;
+        const key = boardTargetKey(note.id);
+        const reactions = boardReactionsMap[key] || [];
+        const comments = boardCommentsMap[key] || [];
+        const iLiked = currentUserId ? reactions.some(r => r.user_id === currentUserId) : false;
+        const mine = note.user_id === currentUserId;
+        const name = memberName(note.user_id);
+        const draft = boardCommentDrafts[key] || '';
+        // Latest two by default. Comments load oldest-first, so slice from the end.
+        const shownComments = noteCommentsExpanded ? comments : comments.slice(-2);
+        const canExpand = comments.length > 2;
+        return (
+          <Modal visible transparent animationType="fade" onRequestClose={closeNote}>
+            <View style={styles.noteBackdrop}>
+              <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={closeNote} />
+              <View style={[styles.noteSheet, warmCardWeb]}>
+                <View style={styles.noteHead}>
+                  <RivalAvatar uri={memberAvatar(note.user_id)} name={name} size={34} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.noteName}>{name}</Text>
+                    <Text style={styles.noteTime}>
+                      {timeAgo(note.created_at)}{note.pinned ? '  ·  Pinned' : ''}
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={closeNote} style={styles.noteClose} accessibilityLabel="Close note">
+                    <RivalIcon name="close" size={20} color="rgba(255,255,255,0.7)" />
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 12 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                  {editingNote ? (
+                    <View style={{ gap: 10 }}>
+                      <TextInput
+                        style={styles.noteTitleInput}
+                        value={noteTitleDraft}
+                        onChangeText={setNoteTitleDraft}
+                        placeholder="Title"
+                        placeholderTextColor="rgba(255,255,255,0.35)"
+                      />
+                      <TextInput
+                        style={styles.noteBodyInput}
+                        value={noteBodyDraft}
+                        onChangeText={setNoteBodyDraft}
+                        placeholder="Message"
+                        placeholderTextColor="rgba(255,255,255,0.35)"
+                        multiline
+                        autoFocus
+                      />
+                    </View>
+                  ) : (
+                    <>
+                      {/* The note itself, in its own bordered panel. For the
+                          author the panel IS the edit control — no separate
+                          Edit button competing with the actions below. */}
+                      <TouchableOpacity
+                        style={styles.noteContent}
+                        activeOpacity={mine ? 0.8 : 1}
+                        disabled={!mine}
+                        onPress={() => startEditingNote(note)}
+                        accessibilityLabel={mine ? 'Edit note' : undefined}
+                      >
+                        {!!note.title && <Text style={styles.noteTitle}>{note.title}</Text>}
+                        <Text style={styles.noteBody} selectable={!mine}>{note.body}</Text>
+                        {mine && <Text style={styles.noteEditHint}>Tap to edit</Text>}
+                      </TouchableOpacity>
+
+                      <View style={styles.noteStatsRow}>
+                        <TouchableOpacity style={styles.noteStatBtn} onPress={() => toggleBoardLike(note.id)} accessibilityLabel={iLiked ? 'Remove like' : 'Like note'}>
+                          <RivalIcon name={iLiked ? 'star' : 'starOutline'} size={20} color={iLiked ? RivalColors.accentGold : 'rgba(255,255,255,0.6)'} />
+                          <Text style={[styles.noteStatText, iLiked && { color: RivalColors.accentGold }]}>{reactions.length}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.noteStatBtn}
+                          onPress={() => setNoteCommentsExpanded(v => !v)}
+                          disabled={!canExpand}
+                          accessibilityLabel={noteCommentsExpanded ? 'Show fewer comments' : `Show all ${comments.length} comments`}
+                        >
+                          <RivalIcon name="chat" size={20} color={noteCommentsExpanded ? RivalColors.accentText : 'rgba(255,255,255,0.6)'} />
+                          <Text style={[styles.noteStatText, noteCommentsExpanded && { color: RivalColors.accentText }]}>{comments.length}</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Comments in their own panel, one per row with a hairline
+                          between. Name on its own line and the comment beneath
+                          it, so a one-word comment doesn't hang off the name. */}
+                      <View style={styles.noteComments}>
+                        {shownComments.map((c, idx) => (
+                          <View key={c.id} style={[styles.noteComment, idx > 0 && styles.noteCommentDivided]}>
+                            <Text style={styles.noteCommentName}>{memberName(c.user_id)}</Text>
+                            <Text style={styles.noteCommentBody}>{c.body}</Text>
+                          </View>
+                        ))}
+                        <View style={[styles.noteCommentInputRow, shownComments.length > 0 && styles.noteCommentDivided]}>
+                          <TextInput
+                            style={styles.noteCommentInput}
+                            value={draft}
+                            onChangeText={(v) => setBoardCommentDrafts(prev => ({ ...prev, [key]: v }))}
+                            placeholder="Add a comment"
+                            placeholderTextColor="rgba(255,255,255,0.35)"
+                            onSubmitEditing={() => postBoardComment(note.id)}
+                          />
+                          <TouchableOpacity
+                            style={styles.noteCommentSend}
+                            onPress={() => postBoardComment(note.id)}
+                            disabled={!draft.trim()}
+                            accessibilityLabel="Post comment"
+                          >
+                            {/* The word, not a paper plane: the plane reads as a
+                                private message, and this comment is public. */}
+                            <Text style={[styles.commentSendText, !draft.trim() && { opacity: 0.4 }]}>Post</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </>
+                  )}
+                </ScrollView>
+
+                {/* A divider and real spacing between the comment box and these
+                    buttons, so Delete can't be hit on the way to Post. */}
+                <View style={styles.noteActionsDivider} />
+                <View style={styles.noteActions}>
+                  {editingNote ? (
+                    <>
+                      <TouchableOpacity style={styles.noteActionBtn} onPress={() => setEditingNote(false)}>
+                        <Text style={styles.noteActionText}>Cancel</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.noteActionBtn, styles.noteActionPrimary]} onPress={saveNoteEdit} disabled={savingNote}>
+                        <Text style={styles.noteActionPrimaryText}>{savingNote ? 'Saving…' : 'Save'}</Text>
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <>
+                      <TouchableOpacity style={styles.noteActionBtn} onPress={() => togglePinBoardPost(note.id, note.pinned)}>
+                        <RivalIcon name="pin" size={16} color={note.pinned ? RivalColors.accentGold : 'rgba(255,255,255,0.8)'} />
+                        <Text style={styles.noteActionText}>{note.pinned ? 'Unpin' : 'Pin to top'}</Text>
+                      </TouchableOpacity>
+                      {mine && (
+                        <TouchableOpacity style={styles.noteActionBtn} onPress={() => deleteBoardPost(note.id)}>
+                          <RivalIcon name="delete" size={16} color="#ff9b8f" />
+                          <Text style={[styles.noteActionText, { color: '#ff9b8f' }]}>Delete</Text>
+                        </TouchableOpacity>
+                      )}
+                    </>
+                  )}
+                </View>
+              </View>
+            </View>
+          </Modal>
+        );
+      })()}
+
+      <EncourageSheet
+        visible={!!encourageTarget}
+        toUser={encourageTarget}
+        onClose={() => setEncourageTarget(null)}
+        onSent={(uid) => setEncouragedIds(prev => new Set(prev).add(uid))}
+      />
+      <ChallengeTeammateSheet
+        visible={!!challengeTarget}
+        leagueId={id as string}
+        currentUserId={currentUserId}
+        opponent={challengeTarget}
+        onClose={() => setChallengeTarget(null)}
+        onSent={() => setChallengesRefresh(n => n + 1)}
+      />
 
       <PlanSessionSheet
         visible={planning}
@@ -1268,7 +1537,7 @@ function ActivityPostCard({
   const myReaction = reactions.find((r) => r.user_id === currentUserId)?.emoji;
   const respectCount = reactions.filter((r) => r.emoji === 'respect').length;
   const inspiredCount = reactions.filter((r) => r.emoji === 'inspired').length;
-  const displayedName = a.user_id === currentUserId ? 'You' : name;
+  const displayedName = name;
   const initials = name.slice(0, 2).toUpperCase();
 
   let badge: { icon: RivalIconName; label: string; color: string } | null = null;
@@ -1293,13 +1562,14 @@ function ActivityPostCard({
       )}
 
       <View style={styles.postHeader}>
-        <TouchableOpacity onPress={() => router.push(`/profile?userId=${a.user_id}` as any)} style={[styles.postAvatar, { backgroundColor: tint.bg, borderColor: tint.color }]}>
+        <TouchableOpacity onPress={() => router.push(`/stats?userId=${a.user_id}` as any)} style={[styles.postAvatar, { backgroundColor: tint.bg, borderColor: tint.color }]}>
           {avatarUrl ? <Image source={{ uri: avatarUrl }} style={styles.postAvatarImg} /> : <Text style={[styles.postAvatarText, { color: tint.color }]}>{initials}</Text>}
         </TouchableOpacity>
-        <View style={{ flex: 1, minWidth: 0 }}>
+        {/* The name opens their profile too, not just the small avatar. */}
+        <TouchableOpacity style={{ flex: 1, minWidth: 0 }} activeOpacity={0.7} onPress={() => router.push(`/stats?userId=${a.user_id}` as any)}>
           <Text style={styles.postName}>{displayedName}</Text>
           <Text style={styles.postMeta}>{a.name || a.activity_type} · {timeAgo(a.started_at)}</Text>
-        </View>
+        </TouchableOpacity>
         {a.user_id === currentUserId && (
           <View style={styles.postMoreWrap}>
             <TouchableOpacity style={styles.postMoreBtn} onPress={() => setMenuOpen(v => !v)} disabled={deleting}>
@@ -1361,13 +1631,13 @@ function ActivityPostCard({
 
       <View style={styles.reactionRow}>
         <TouchableOpacity style={styles.reactionItem} onPress={() => onReact('respect')}>
-          <RivalIcon name={myReaction === 'respect' ? 'star' : 'starOutline'} size={15} color={myReaction === 'respect' ? RivalColors.accentText : RivalColors.onSurface} />
-          <Text style={[styles.reactionLabel, myReaction === 'respect' && { color: RivalColors.accentText }]}>Respect</Text>
+          <RivalIcon name={myReaction === 'respect' ? 'star' : 'starOutline'} size={15} color={myReaction === 'respect' ? RivalColors.accentGold : RivalColors.onSurface} />
+          <Text style={[styles.reactionLabel, myReaction === 'respect' && { color: RivalColors.accentGold }]}>Respect</Text>
           <Text style={[styles.reactionCount, respectCount > 0 && styles.reactionCountActive]}>{respectCount}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.reactionItem} onPress={() => onReact('inspired')}>
-          <RivalIcon name="bolt" size={15} color={myReaction === 'inspired' ? RivalColors.accentText : RivalColors.onSurface} />
-          <Text style={[styles.reactionLabel, myReaction === 'inspired' && { color: RivalColors.accentText }]}>Inspired</Text>
+          <RivalIcon name="bolt" size={15} color={myReaction === 'inspired' ? RivalColors.accentGold : RivalColors.onSurface} />
+          <Text style={[styles.reactionLabel, myReaction === 'inspired' && { color: RivalColors.accentGold }]}>Inspired</Text>
           <Text style={[styles.reactionCount, inspiredCount > 0 && styles.reactionCountActive]}>{inspiredCount}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.commentCount} onPress={onToggleComments}>
@@ -1380,7 +1650,7 @@ function ActivityPostCard({
         <View style={styles.commentsBlock}>
           {comments.map((c) => (
             <View key={c.id} style={styles.commentRow}>
-              <Text style={styles.commentAuthor}>{c.user_id === currentUserId ? 'You' : nameForUser(c.user_id)}</Text>
+              <Text style={styles.commentAuthor}>{nameForUser(c.user_id)}</Text>
               <Text style={styles.commentBody}>{c.body}</Text>
             </View>
           ))}
@@ -1411,6 +1681,10 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1 },
   loadingText: { color: RivalColors.textSecondary, fontSize: 14, textAlign: 'center', marginTop: 60 },
   hero: { paddingBottom: 24, minHeight: 560 },
+  // The 560 floor is sized for the Team Challenge ring. Posts shows the much
+  // shorter Team Board in that slot, so there the hero hugs its content —
+  // otherwise the floor leaves a screen-height gap before the first post.
+  heroFit: { minHeight: 0 },
   heroScrim: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(10,8,7,0.35)' },
 
   header: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingTop: 8 },
@@ -1435,8 +1709,10 @@ const styles = StyleSheet.create({
   boardWrap: { marginTop: 24, paddingHorizontal: 20, gap: 10 },
   boardHeadRow: { alignItems: 'center' },
   boardTitle: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '700', fontSize: 20, color: '#fff', textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
-  boardAddNote: { width: '48.5%', minHeight: 150, alignSelf: 'flex-start', borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.04)', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  boardAddNoteText: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '500', fontSize: 14, color: 'rgba(255,255,255,0.6)' },
+  // 60% of the original tile (48.5% wide, 150 tall). The label is 13px, not
+  // scaled down with the tile — thin serif italic is hard to read any smaller.
+  boardAddNote: { width: '29%', minHeight: 90, alignSelf: 'flex-start', borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.04)', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  boardAddNoteText: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '500', fontSize: 13, color: 'rgba(255,255,255,0.6)' },
   boardComposeCard: { backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER, borderRadius: 14, padding: 14, gap: 4 },
   boardComposeTitleInput: { color: RivalColors.accentText, fontSize: 11, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', paddingVertical: 4 },
   boardComposeRule: {
@@ -1449,10 +1725,89 @@ const styles = StyleSheet.create({
   boardDiscardBtnText: { color: 'rgba(255,255,255,0.45)', fontSize: 11, fontWeight: '600' },
   boardPostBtn: { backgroundColor: 'rgba(217,119,87,0.18)', borderRadius: 8, paddingVertical: 5, paddingHorizontal: 12, borderWidth: 1, borderColor: 'rgba(217,119,87,0.35)' },
   boardPostBtnText: { color: RivalColors.accentText, fontSize: 11, fontWeight: '700' },
-  boardEmpty: { fontSize: 12.5, color: 'rgba(255,255,255,0.6)', textAlign: 'center' },
   boardErrorText: { fontSize: 12, color: '#ff8a8a', textAlign: 'center' },
 
-  boardGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10 },
+  // flex-start with a fixed gap, not space-between: space-between pushed a
+  // lone Pin Note tile to the far edge, leaving a hole beside the note. Two
+  // notes (48.5% + 3% + 48.5%) still fill the row exactly.
+  planWeekLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 18,
+    backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER,
+  },
+  planWeekTitle: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  planWeekSub: { fontSize: 12.5, color: RivalColors.textSecondary, marginTop: 1 },
+  inviteCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 20,
+    backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER,
+  },
+  inviteLabel: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2, color: RivalColors.accentText },
+  inviteCode: { fontSize: 24, fontWeight: '800', letterSpacing: 3, color: '#fff', marginTop: 2 },
+  inviteSub: { fontSize: 12.5, color: RivalColors.textSecondary, marginTop: 2 },
+  inviteBtn: {
+    minWidth: 84, minHeight: 44, paddingHorizontal: 16, borderRadius: 999, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: RivalColors.accentFill,
+  },
+  inviteBtnText: { fontSize: 14, fontWeight: '800', color: RivalColors.surfaceLowest },
+  leaveBtn: {
+    minHeight: 48, borderRadius: 999, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(255,155,143,0.35)',
+  },
+  leaveText: { fontSize: 14, fontWeight: '700', color: '#ff9b8f' },
+  noteBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', padding: 18 },
+  noteSheet: {
+    backgroundColor: '#1f1b19', borderRadius: 22, borderWidth: 1, borderColor: CARD_BORDER,
+    padding: 18, gap: 14, maxHeight: '86%',
+  },
+  noteHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  noteName: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  noteTime: { fontSize: 12.5, color: 'rgba(255,255,255,0.55)', marginTop: 1 },
+  // 44px: the smallest target a thumb hits reliably.
+  noteClose: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.06)' },
+  noteTitle: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '700', fontSize: 22, color: '#fff' },
+  noteBody: { fontFamily: SERIF, fontStyle: 'italic', fontSize: 17, lineHeight: 26, color: 'rgba(255,255,255,0.92)' },
+  noteContent: {
+    backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 16, padding: 14, gap: 8,
+  },
+  noteEditHint: { fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 2 },
+  noteStatsRow: { flexDirection: 'row', gap: 18, paddingHorizontal: 4 },
+  noteComments: {
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.18)', paddingHorizontal: 14,
+  },
+  noteComment: { paddingVertical: 11, gap: 3 },
+  noteCommentDivided: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)' },
+  noteCommentName: { fontSize: 12.5, fontWeight: '700', color: RivalColors.accentText },
+  noteActionsDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.1)', marginTop: 4 },
+  noteStatBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44 },
+  noteStatText: { fontSize: 15, color: 'rgba(255,255,255,0.7)' },
+  noteCommentBody: { fontSize: 14, color: 'rgba(255,255,255,0.85)', lineHeight: 20 },
+  noteCommentInputRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
+  noteCommentInput: {
+    flex: 1, minWidth: 0, minHeight: 44, borderRadius: 22, paddingHorizontal: 16,
+    backgroundColor: 'rgba(255,255,255,0.06)', color: '#fff',
+    // 16 is the floor iOS Safari zooms below on focus.
+    fontSize: 16,
+  },
+  noteCommentSend: { minWidth: 44, height: 44, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center' },
+  noteTitleInput: {
+    fontFamily: SERIF, fontStyle: 'italic', fontWeight: '700', fontSize: 18, color: '#fff',
+    borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  noteBodyInput: {
+    fontFamily: SERIF, fontStyle: 'italic', fontSize: 16, lineHeight: 24, color: '#fff', minHeight: 140,
+    textAlignVertical: 'top', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  noteActions: { flexDirection: 'row', gap: 10 },
+  noteActionBtn: {
+    flex: 1, minHeight: 48, borderRadius: 999, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  noteActionText: { fontSize: 14, fontWeight: '700', color: 'rgba(255,255,255,0.9)' },
+  noteActionPrimary: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
+  noteActionPrimaryText: { fontSize: 14, fontWeight: '800', color: RivalColors.surfaceLowest },
+  boardGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start', columnGap: '3%', rowGap: 10 },
   boardNote: { width: '48.5%', backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER, borderRadius: 16, padding: 10, gap: 4, position: 'relative' },
   boardPin: { position: 'absolute', top: -5, left: '50%', marginLeft: -5, width: 10, height: 10, borderRadius: 5 },
   boardNoteHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
@@ -1488,7 +1843,9 @@ const styles = StyleSheet.create({
   ringMetaBold: { fontWeight: '800', color: '#fff' },
 
   scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 40 },
+  // Clears the floating tab pill so the last card never sits under it —
+  // same clearance team-feed.tsx uses.
+  scrollContent: { paddingBottom: 120 },
   body: { paddingHorizontal: 20, paddingTop: 16, gap: 16 },
 
   paceCard: {
@@ -1524,26 +1881,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: `${RivalColors.accentFill}44`,
   },
   planBtnText: { fontSize: 12, fontWeight: '700', color: RivalColors.accentText },
-  sessionCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
-  sessionKickerRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  sessionKicker: { fontSize: 10, fontWeight: '800', letterSpacing: 0.7, color: RivalColors.accentText },
-  sessionEdit: { fontSize: 10, fontWeight: '800', letterSpacing: 0.7, color: RivalColors.textSecondary, textDecorationLine: 'underline' },
-  sessionTitle: { fontSize: 14, fontWeight: '700', color: '#fff', marginTop: 2 },
-  sessionWhen: { fontSize: 13, color: '#fff', marginTop: 2 },
-  sessionMeta: { fontSize: 12, color: RivalColors.textSecondary, marginTop: 2 },
-  sessionPlace: { color: RivalColors.accentText, textDecorationLine: 'underline' },
   seeAllRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
     paddingVertical: 12, marginTop: 2,
   },
   seeAllText: { fontSize: 13, fontWeight: '700', color: RivalColors.accentText },
-  rsvpBtn: {
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999,
-    backgroundColor: RivalColors.accentFill,
-  },
-  rsvpBtnOut: { backgroundColor: 'transparent', borderWidth: 1, borderColor: RivalColors.textSecondary },
-  rsvpText: { fontSize: 12, fontWeight: '800', color: RivalColors.surfaceLowest },
-  rsvpTextOut: { color: RivalColors.textSecondary },
   sectionTitle: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: '#fff' },
 
   card: { backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6 },

@@ -3,7 +3,7 @@ import { StyleSheet, TouchableOpacity, View, Text, Share, Platform, ScrollView, 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Asset } from 'expo-asset';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { invalidateUnreadChats } from '../lib/unreadChats';
 import { notify } from '../lib/notify';
 import { getLevel } from '../lib/xp';
@@ -425,7 +425,7 @@ export default function LeagueScreen() {
   }
 
   async function loadLeague() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (user) {
       setCurrentUserId(user.id);
       const { data: myMembership } = await supabase
@@ -1212,7 +1212,6 @@ export default function LeagueScreen() {
   }
 
   function memberName(userId: string): string {
-    if (userId === currentUserId) return 'You';
     const m = members.find(mm => mm.user_id === userId);
     return m ? formatDisplayName(m.users) : 'Athlete';
   }
@@ -1418,7 +1417,7 @@ export default function LeagueScreen() {
                 onSubmitEditing={() => postComment(targetType, targetId)}
               />
               <TouchableOpacity onPress={() => postComment(targetType, targetId)} disabled={!(commentDrafts[key] || '').trim()}>
-                <Text style={styles.commentSendText}>Send</Text>
+                <Text style={styles.commentSendText}>Post</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1659,7 +1658,7 @@ export default function LeagueScreen() {
                               <RivalAvatar uri={member.users?.avatar_url} name={name} size={32} />
                             </View>
                             <View style={{ flex: 1, minWidth: 0 }}>
-                              <Text style={[styles.contribName, i === 0 && styles.contribGold]}>{name}{c.userId === currentUserId ? ' (you)' : ''}</Text>
+                              <Text style={[styles.contribName, i === 0 && styles.contribGold]}>{name}</Text>
                               <View style={{ marginTop: 4 }}>
                                 <RivalProgressBar pct={c.value / topValue} height={4} />
                               </View>
@@ -1793,7 +1792,7 @@ export default function LeagueScreen() {
                 <View style={styles.memberInfo}>
                   <View style={styles.nameRow}>
                     <Text style={styles.memberName}>
-                      {getDisplayName(member)}{member.user_id === currentUserId ? ' (you)' : ''}
+                      {getDisplayName(member)}
                     </Text>
                     {member.isHot && <Text style={styles.hotBadge}>🔥</Text>}
                     {member.user_id === mvpUserId && <Text style={styles.mvpBadge}>👑 MVP</Text>}
@@ -2036,7 +2035,7 @@ export default function LeagueScreen() {
               const color = avatarColor(item.name);
               const initials = item.name.slice(0, 2).toUpperCase();
               const isMe = item.userId === currentUserId;
-              const displayedName = isMe ? 'You' : item.name;
+              const displayedName = item.name;
 
               const userRow = (
                 <View style={styles.feedUserRow}>

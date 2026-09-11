@@ -3,7 +3,7 @@ import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, 
 import Svg, { Defs, LinearGradient, Polygon, Stop } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { connectStrava } from '../lib/strava';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { notify } from '../lib/notify';
@@ -377,7 +377,7 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                     />
                                   ) : (
                                     <Text style={{ fontFamily: RivalFontFamily, color: rankStyle.tint, fontWeight: '800', fontSize: rankStyle.avatarSize * 0.32 }}>
-                                      {(entry.isSelf ? 'Y' : entry.name[0] || '?').toUpperCase()}
+                                      {(entry.name[0] || '?').toUpperCase()}
                                     </Text>
                                   )}
                                 </View>
@@ -410,7 +410,7 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                 </Svg>
                                 <View style={{ flex: 1, alignItems: 'center', paddingTop: effPadTop, paddingBottom: effPadBottom }}>
                                   <Text style={[styles.mPodiumName, { color: rankStyle.tint, fontSize: rankStyle.nameSize, lineHeight: Math.round(rankStyle.nameSize * 1.15), letterSpacing: rankStyle.nameLetterSpacing }]} numberOfLines={1}>
-                                    {entry.isSelf ? 'You' : entry.name}
+                                    {entry.name}
                                   </Text>
                                   <Text style={[styles.mPodiumPoints, { fontSize: rankStyle.ptsSize, lineHeight: Math.round(rankStyle.ptsSize * 1.15), color: rankStyle.ptsColor }]}>{entry.points}</Text>
                                   <Text style={{ fontSize: 10, lineHeight: 12, color: rankStyle.ptsTint, fontWeight: '500', flexShrink: 0 }}>pts</Text>
@@ -536,7 +536,7 @@ export default function HomeScreen() {
   }
 
   async function loadAll() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
 
     const uId = user.id;
@@ -645,12 +645,26 @@ export default function HomeScreen() {
       });
 
       const allMemberIds = [...new Set((leagueMembersData || []).map((m: any) => m.user_id as string))];
-      const { data: recentActivities } = await supabase
-        .from('activities')
-        .select('user_id, started_at')
-        .in('user_id', allMemberIds)
-        .gte('started_at', startOfToday.toISOString())
-        .order('started_at', { ascending: false });
+
+      // Today's activity (Momentum) and this week's Effort (Weekly Leader)
+      // both need only the member list, so they go out together rather than
+      // one after the other.
+      const weekStart = getMondayOfWeek(new Date());
+      const [{ data: recentActivities }, { data: weekActivities }] = await Promise.all([
+        supabase
+          .from('activities')
+          .select('user_id, started_at')
+          .in('user_id', allMemberIds)
+          .gte('started_at', startOfToday.toISOString())
+          .order('started_at', { ascending: false }),
+        allMemberIds.length > 0
+          ? supabase
+              .from('activities')
+              .select('user_id, effort_score')
+              .in('user_id', allMemberIds)
+              .gte('started_at', weekStart.toISOString())
+          : Promise.resolve({ data: [] as any[] }),
+      ]);
 
       const leagueListWithCounts = leagueList.map((l: League) => {
         const memberIds = new Set(memberIdsByLeague[l.id] || []);
@@ -695,7 +709,6 @@ export default function HomeScreen() {
       // can't win the whole day-to-day this way — it has to hold up over the
       // week, and laggards can see exactly how much Effort they need to catch
       // the leader instead of just "some number."
-      const weekStart = getMondayOfWeek(new Date());
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekEnd.getDate() + 6);
       weekEnd.setHours(23, 59, 59, 999);
@@ -710,12 +723,6 @@ export default function HomeScreen() {
       // allMemberIds is already in scope above — every member across every team.
       const leaders: WeeklyLeader[] = [];
       if (allMemberIds.length > 0) {
-        const { data: weekActivities } = await supabase
-          .from('activities')
-          .select('user_id, effort_score')
-          .in('user_id', allMemberIds)
-          .gte('started_at', weekStart.toISOString());
-
         const pointsByUser: Record<string, number> = {};
         (weekActivities || []).forEach((a: any) => {
           pointsByUser[a.user_id] = (pointsByUser[a.user_id] || 0) + (a.effort_score || 0);
@@ -1329,7 +1336,7 @@ export default function HomeScreen() {
                       <View style={{ flex: 1 }} />
 
                       <View style={[styles.focusEmptyLinkRow, styles.focusEmptyLinkBottom]}>
-                        <TouchableOpacity onPress={() => router.push({ pathname: '/league', params: { id: weeklyLeader.leagueId } })}>
+                        <TouchableOpacity onPress={() => router.push({ pathname: '/team-hub', params: { id: weeklyLeader.leagueId } })}>
                           <Text
                             style={[
                               styles.focusEmptyLink,
@@ -1417,7 +1424,7 @@ export default function HomeScreen() {
                     <View style={{ flex: 1 }} />
 
                     <View style={[styles.focusEmptyLinkRow, styles.focusEmptyLinkBottom]}>
-                      <TouchableOpacity onPress={() => router.push({ pathname: '/league', params: { id: weeklyLeader.leagueId } })}>
+                      <TouchableOpacity onPress={() => router.push({ pathname: '/team-hub', params: { id: weeklyLeader.leagueId } })}>
                         <Text
                           style={[
                             styles.focusEmptyLink,
@@ -1552,7 +1559,7 @@ export default function HomeScreen() {
                     <View style={{ flex: 1 }} />
 
                     <View style={[styles.focusEmptyLinkRow, styles.focusEmptyLinkBottom]}>
-                      <TouchableOpacity onPress={() => router.push({ pathname: '/league', params: { id: hotTeam.id } })}>
+                      <TouchableOpacity onPress={() => router.push({ pathname: '/team-hub', params: { id: hotTeam.id } })}>
                         <Text
                           style={[
                             styles.focusEmptyLink,

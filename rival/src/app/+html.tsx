@@ -30,6 +30,17 @@ export default function Root({ children }: { children: React.ReactNode }) {
         <meta name="theme-color" content="#0e0e0e" />
         <link rel="manifest" href="/manifest.json" />
 
+        {/* Open the connection to Supabase while the app's JavaScript is still
+            downloading, so the first data request doesn't also have to wait
+            for DNS, TCP and TLS setup. Rendered at build time, when the
+            EXPO_PUBLIC_ variables are available. */}
+        {!!process.env.EXPO_PUBLIC_SUPABASE_URL && (
+          <>
+            <link rel="preconnect" href={process.env.EXPO_PUBLIC_SUPABASE_URL} crossOrigin="" />
+            <link rel="dns-prefetch" href={process.env.EXPO_PUBLIC_SUPABASE_URL} />
+          </>
+        )}
+
         <ScrollViewStyleReset />
 
         {/* Every OTHER screen in this app is a react-native-web "app shell": locked to

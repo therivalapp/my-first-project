@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Platform, Image, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { RivalTopNav, RivalIcon, RivalFixedBackground } from '../components/rival';
 import type { RivalIconName } from '../components/rival/RivalIcon';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
@@ -449,7 +449,7 @@ export default function CreateLeagueScreen() {
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) return;
       const { data } = await supabase
         .from('races')
@@ -483,7 +483,7 @@ export default function CreateLeagueScreen() {
     setLoading(true);
     setError('');
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) {
       setError('Not logged in.');
       setLoading(false);
@@ -574,7 +574,7 @@ export default function CreateLeagueScreen() {
 
   function enterTeam() {
     if (!leagueId) return;
-    router.replace({ pathname: '/league', params: { id: leagueId } });
+    router.replace({ pathname: '/team-hub', params: { id: leagueId } });
   }
 
   async function saveAddRace() {
@@ -585,7 +585,7 @@ export default function CreateLeagueScreen() {
     setAddingRace(true);
     setAddRaceError('');
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) {
       setAddRaceError('Not logged in.');
       setAddingRace(false);

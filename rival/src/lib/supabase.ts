@@ -23,3 +23,19 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false,
   },
 });
+
+// The signed-in user, read from the session already stored on the device.
+//
+// supabase.auth.getUser() makes a network round trip to the auth server to
+// re-validate the token, and nearly every screen called it FIRST, before any
+// of its own queries could start — so every page paid one extra full round
+// trip before loading anything. The session is already here: the database
+// still checks the token on every query (RLS), so the client only needs the
+// id to know whose data to ask for. getSession() also refreshes an expired
+// token itself, so this stays correct across long sessions.
+//
+// Same { data: { user } } shape as getUser(), so call sites swap one-for-one.
+export async function getAuthUser() {
+  const { data: { session } } = await supabase.auth.getSession();
+  return { data: { user: session?.user ?? null } };
+}

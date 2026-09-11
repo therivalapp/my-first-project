@@ -4,8 +4,29 @@
     {
       "name": "rival-web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "web", "--prefix", "rival"],
+      "runtimeArgs": [
+        "run",
+        "web",
+        "--prefix",
+        "rival"
+      ],
       "port": 8081
+    },
+    {
+      "name": "rival-prod",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "exec",
+        "--prefix",
+        "rival",
+        "--",
+        "expo",
+        "serve",
+        "rival/dist",
+        "--port",
+        "8090"
+      ],
+      "port": 8090
     }
   ]
 }

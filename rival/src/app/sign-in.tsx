@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, Image, Platform } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, Image, Platform, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
@@ -80,7 +80,15 @@ export default function SignInScreen() {
       <Image source={SMOKE_SOURCE} style={styles.smoke} resizeMode="cover" />
       <Image source={SMOKE_SOURCE} style={styles.smokeTop} resizeMode="cover" />
       <SafeAreaView style={styles.container}>
-        <View style={styles.content}>
+        <ScrollView
+          // Scrolls when the form is taller than the screen (a small phone, or
+          // the keyboard up) instead of cutting the bottom off. Short forms
+          // still sit centred: the content grows to fill, then beyond it.
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
 
           <RivalBackButton onPress={() => router.back()} style={styles.back} />
 
@@ -160,7 +168,7 @@ export default function SignInScreen() {
             </TouchableOpacity>
           </View>
 
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </View>
   );
@@ -209,7 +217,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   content: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: 24,
     paddingTop: 16,
     justifyContent: 'center',

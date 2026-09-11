@@ -5,7 +5,7 @@ import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image,
 import { confirmAction, notify } from '../lib/notify';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 
 // A crest (and the name baked into it) can change once every 6 months —
@@ -63,7 +63,7 @@ export default function LeagueSettingsScreen() {
   }, [id]);
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setCurrentUserId(user.id);
 
@@ -409,7 +409,7 @@ export default function LeagueSettingsScreen() {
               <View style={styles.memberInfo}>
                 <Text style={styles.memberName}>
                   {getDisplayName(member)}
-                  {member.user_id === currentUserId ? ' (you)' : ''}
+                  
                 </Text>
                 {member.role === 'admin' && (
                   <Text style={styles.adminBadge}>Admin</Text>

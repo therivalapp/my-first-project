@@ -137,6 +137,10 @@ export function PlanSessionSheet({
   const [customType, setCustomType] = useState('');
   const [date, setDate] = useState(todayDisplay());
   const [time, setTime] = useState('07:00');
+  // Minutes from now for a "Train Now" session, or null for a scheduled one.
+  // Replaces the old team page's separate Let's Train form: same thing, one
+  // switch inside the sheet rather than a second button competing for room.
+  const [startsIn, setStartsIn] = useState<number | null>(null);
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
   const [posting, setPosting] = useState(false);
@@ -189,6 +193,7 @@ export function PlanSessionSheet({
     setCustomType('');
     setDate(todayDisplay());
     setTime('07:00');
+    setStartsIn(null);
     setLocation('');
     setNote('');
   }
@@ -207,7 +212,8 @@ export function PlanSessionSheet({
   // picked from the full list or typed as a custom one.
   const outsidePick = type === CUSTOM || !SESSION_TYPES.includes(type);
 
-  const canPost = !!resolvedType && !!displayToIsoDate(date) && timeValid && !!location.trim();
+  const whenValid = startsIn !== null || (!!displayToIsoDate(date) && timeValid);
+  const canPost = !!resolvedType && whenValid && !!location.trim();
 
   async function post() {
     if (!currentUserId || posting || !canPost) return;
@@ -215,16 +221,21 @@ export function PlanSessionSheet({
       notify('Activity needed', 'Choose an activity, or name your own.');
       return;
     }
-    const isoDate = displayToIsoDate(date);
-    const [h, min] = time.split(':').map(Number);
-    // Number('3O') is NaN and NaN == null is false, so an explicit range check
-    // is the only guard that keeps an Invalid Date out of toISOString() below.
-    if (!isoDate || !Number.isInteger(h) || !Number.isInteger(min) || h < 0 || h > 23 || min < 0 || min > 59) {
-      notify('Check the time', 'Enter the time in 24-hour format, for example 07:30.');
-      return;
+    let scheduledAt: Date;
+    if (startsIn !== null) {
+      scheduledAt = new Date(Date.now() + startsIn * 60 * 1000);
+    } else {
+      const isoDate = displayToIsoDate(date);
+      const [h, min] = time.split(':').map(Number);
+      // Number('3O') is NaN and NaN == null is false, so an explicit range check
+      // is the only guard that keeps an Invalid Date out of toISOString() below.
+      if (!isoDate || !Number.isInteger(h) || !Number.isInteger(min) || h < 0 || h > 23 || min < 0 || min > 59) {
+        notify('Check the time', 'Enter the time in 24-hour format, for example 07:30.');
+        return;
+      }
+      const [y, m, d] = isoDate.split('-').map(Number);
+      scheduledAt = new Date(y, m - 1, d, h, min);
     }
-    const [y, m, d] = isoDate.split('-').map(Number);
-    const scheduledAt = new Date(y, m - 1, d, h, min);
 
     setPosting(true);
 
@@ -390,8 +401,33 @@ export function PlanSessionSheet({
                 reads as a single form rather than a stack of identical
                 rectangles — and every row gets its own accent icon, which is
                 what makes it scannable at a glance. */}
+            {!editing && (
+              <>
+                <Text style={styles.label}>When</Text>
+                <View style={styles.whenRow}>
+                  <TouchableOpacity style={[styles.whenBtn, startsIn === null && styles.whenBtnOn]} onPress={() => setStartsIn(null)}>
+                    <Text style={[styles.whenText, startsIn === null && styles.whenTextOn]}>Schedule</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.whenBtn, startsIn !== null && styles.whenBtnOn]} onPress={() => setStartsIn(v => v ?? 30)}>
+                    <Text style={[styles.whenText, startsIn !== null && styles.whenTextOn]}>Train Now</Text>
+                  </TouchableOpacity>
+                </View>
+                {startsIn !== null && (
+                  <View style={[styles.chipRow, { marginTop: 10 }]}>
+                    {[15, 30, 60, 90].map(m => (
+                      <TouchableOpacity key={m} style={[styles.chip, startsIn === m && styles.chipOn]} onPress={() => setStartsIn(m)}>
+                        <Text style={[styles.chipText, startsIn === m && styles.chipTextOn]}>In {m} min</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </>
+            )}
+
             <Text style={styles.label}>Details</Text>
             <View style={styles.fieldCard}>
+              {startsIn === null && (
+                <>
               {/* The whole row is the trigger — no trailing calendar button.
                   A button parked on the right pushed the date 48px in from the
                   card's edge while every other value sat flush against it, so
@@ -421,6 +457,8 @@ export function PlanSessionSheet({
               </TouchableOpacity>
 
               <View style={styles.divider} />
+                </>
+              )}
 
               <View style={styles.fieldRow}>
                 <RivalIcon name="location" size={16} color={RivalColors.accentText} style={styles.fieldIcon} />
@@ -723,6 +761,14 @@ const styles = StyleSheet.create({
   // same right edge as the values typed into the rows around it.
   rowValue: { color: RivalColors.textPrimary, fontSize: 16, fontWeight: '600', textAlign: 'right', paddingVertical: 8 },
   divider: { height: 1, backgroundColor: RivalColors.surfaceBright, opacity: 0.6 },
+  whenRow: {
+    flexDirection: 'row', padding: 4, borderRadius: 999,
+    backgroundColor: RivalColors.surfaceLowest, borderWidth: 1, borderColor: RivalColors.surfaceBright,
+  },
+  whenBtn: { flex: 1, minHeight: 40, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  whenBtnOn: { backgroundColor: RivalColors.surfaceBright },
+  whenText: { fontSize: 13.5, fontWeight: '700', color: RivalColors.textSecondary },
+  whenTextOn: { color: '#fff' },
 
   calendarOverlay: {
     position: 'absolute', top: 0, right: 0, bottom: 0, left: 0,

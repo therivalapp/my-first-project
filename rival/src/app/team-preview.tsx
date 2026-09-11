@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, View, Text, Image, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { RivalIcon, RivalBackButton, RivalCard, RivalTopNav } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
 import { formatTeamName } from '../lib/identity';
@@ -48,7 +48,7 @@ export default function TeamPreviewScreen() {
     if (!id) { setLoading(false); return; }
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     setSignedIn(!!user);
 
     // Private teams return no row at all — invite-only means invisible, not
@@ -74,7 +74,7 @@ export default function TeamPreviewScreen() {
   }
 
   async function requestToJoin() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user || !id) return;
     setJoining(true);
     setError('');
@@ -178,7 +178,7 @@ export default function TeamPreviewScreen() {
         {membership === 'active' ? (
           <TouchableOpacity
             style={styles.primaryBtn}
-            onPress={() => router.push({ pathname: '/league', params: { id: preview.id } })}
+            onPress={() => router.push({ pathname: '/team-hub', params: { id: preview.id } })}
           >
             <Text style={styles.primaryBtnText}>Open team</Text>
           </TouchableOpacity>

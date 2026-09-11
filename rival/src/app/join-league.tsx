@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { RivalColors } from '../constants/rivalTheme';
 import { RivalIcon, RivalBackButton} from '../components/rival';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 
 export default function JoinLeagueScreen() {
   const [code, setCode] = useState('');
@@ -20,7 +20,7 @@ export default function JoinLeagueScreen() {
     setLoading(true);
     setError('');
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) {
       setError('Not logged in.');
       setLoading(false);
@@ -46,12 +46,20 @@ export default function JoinLeagueScreen() {
     }
 
     setLoading(false);
-    router.replace({ pathname: '/league', params: { id: result.league_id } });
+    router.replace({ pathname: '/team-hub', params: { id: result.league_id } });
   }
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
+      <ScrollView
+          // Scrolls when the form is taller than the screen (a small phone, or
+          // the keyboard up) instead of cutting the bottom off. Short forms
+          // still sit centred: the content grows to fill, then beyond it.
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
 
         <View style={styles.header}>
           <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
@@ -87,7 +95,7 @@ export default function JoinLeagueScreen() {
           </Text>
         </TouchableOpacity>
 
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -98,7 +106,7 @@ const styles = StyleSheet.create({
     backgroundColor: RivalColors.surfaceLow,
   },
   content: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: 24,
     paddingTop: 16,
   },

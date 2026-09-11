@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal, ImageBackground, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { CANONICAL_LIFTS, matchCanonicalLift } from './scan-workout';
 import { RivalIcon, RivalTopNav, RivalFixedBackground, RivalBackButton} from '../components/rival';
@@ -41,7 +41,7 @@ export default function LiftsScreen() {
   }, [cards]);
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setLoading(false); return; }
 
     const [entriesRes, goalsRes] = await Promise.all([
@@ -83,7 +83,7 @@ export default function LiftsScreen() {
   }
 
   async function saveLog() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     const rawName = logModalFor === 'Other' ? customName.trim() : logModalFor;
     const exerciseName = (rawName && matchCanonicalLift(rawName)) || rawName;
@@ -116,7 +116,7 @@ export default function LiftsScreen() {
   }
 
   async function saveGoal() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user || !goalModalFor) return;
     const target = parseFloat(goalWeight);
     if (!target || target <= 0) return;

@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { computeGoalProgress } from '../lib/goalProgress';
 import { confirmAction, notify } from '../lib/notify';
@@ -224,7 +224,7 @@ export default function GoalsScreen() {
   useFocusEffect(useCallback(() => { load(); }, []));
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setUserId(user.id);
 

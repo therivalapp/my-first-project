@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { View, Text, StyleSheet, Platform, ScrollView, Image, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { formatTeamName } from '../lib/identity';
 import { RivalTopNav, RivalIcon } from '../components/rival';
 import { getUnreadChats } from '../lib/unreadChats';
@@ -51,7 +51,7 @@ export default function MessagesScreen() {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setLoading(false); return; }
 
     const { data: memberships } = await supabase

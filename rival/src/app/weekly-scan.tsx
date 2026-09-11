@@ -6,7 +6,7 @@ import { notify } from '../lib/notify';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { calculateEffortScore, loadScoringConfig } from '../lib/effort';
 import { findMatchingRaceId } from '../lib/raceMatch';
 import { matchCanonicalLift } from './scan-workout';
@@ -147,7 +147,7 @@ export default function WeeklyScanScreen() {
     const initialResults: DayResult[] = daysWithPhotos.map(d => ({ label: d.label, status: 'pending' }));
     setResults(initialResults);
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     const { data: { session } } = await supabase.auth.getSession();
     if (!user || !session) {
       setProcessing(false);
@@ -321,7 +321,7 @@ export default function WeeklyScanScreen() {
   ) {
     setUploadingIndex(index);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) return;
 
       const existing = results?.[index]?.mediaCount || 0;

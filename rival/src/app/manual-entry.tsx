@@ -3,7 +3,7 @@ import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { calculateEffortScore, loadScoringConfig, ScoringConfig } from '../lib/effort';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { findMatchingRaceId } from '../lib/raceMatch';
@@ -248,7 +248,7 @@ export default function ManualEntryScreen() {
     setFieldError(null);
     setGeneralError(null);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) { setSaving(false); return; }
 
       const distance = distanceKm.trim() === '' ? 0 : Number(distanceKm);

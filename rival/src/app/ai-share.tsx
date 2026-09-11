@@ -4,7 +4,7 @@ import { RivalIcon, RivalBackButton} from '../components/rival';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Platform, ActivityIndicator, Image, Animated, Easing } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { formatDuration } from '../lib/format';
 
 const SHARE_STYLES = [
@@ -107,7 +107,7 @@ export default function AiShareScreen() {
   useFocusEffect(useCallback(() => { if (activityId) { loadActivity(); loadQuota(); loadRaces(); } }, [activityId]));
 
   async function loadRaces() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -121,7 +121,7 @@ export default function AiShareScreen() {
   }
 
   async function loadQuota() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { count, data: rows } = await supabase

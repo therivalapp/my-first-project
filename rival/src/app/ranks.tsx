@@ -3,7 +3,7 @@ import { RivalColors } from '../constants/rivalTheme';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { LEVELS, getLevel } from '../lib/xp';
 import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
 
@@ -12,7 +12,7 @@ export default function RanksScreen() {
 
   useEffect(() => {
     async function load() {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) return;
       const { data } = await supabase
         .from('activities')

@@ -5,14 +5,15 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { formatDisplayName } from '../lib/identity';
 import { invalidateUnreadChats } from '../lib/unreadChats';
-import { openInMaps } from '../lib/maps';
-import { formatAttendees } from '../lib/attendees';
+import { copyText } from '../lib/clipboard';
 import { RivalIcon, RivalBackButton, PlanSessionSheet } from '../components/rival';
+import { SessionCard } from '../components/rival/SessionCard';
 import type { EditableSession } from '../components/rival/PlanSessionSheet';
+import { CalendarAddIcon } from '../components/rival/CalendarAddIcon';
 import { RivalColors, RivalRadius } from '../constants/rivalTheme';
 
 // Dedicated team chat, laid out the way Messenger does it.
@@ -145,6 +146,16 @@ export default function ChatScreen() {
   const [sessionsOnly, setSessionsOnly] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [editingSession, setEditingSession] = useState<EditableSession | null>(null);
+  // Which session's location was just copied, so its card can confirm it.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  async function copyLocation(id: string, text: string) {
+    if (!(await copyText(text))) return;
+    setCopiedId(id);
+    clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopiedId(null), 1600);
+  }
   // Ticks so a session crosses into "Done" while the screen is open, instead of
   // waiting for a reload. A minute is finer than the grace period needs.
   const [now, setNow] = useState(() => Date.now());
@@ -163,21 +174,22 @@ export default function ChatScreen() {
 
   async function init() {
     if (!id) { setLoading(false); return; }
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { router.replace('/sign-in'); return; }
     setCurrentUserId(user.id);
 
-    const [teamRes, memberRes, readRes] = await Promise.all([
+    // The messages don't depend on the team's name or members, so they load
+    // at the same time instead of waiting their turn.
+    const [teamRes, memberRes, readRes, loaded] = await Promise.all([
       supabase.from('leagues').select('name, logo_url').eq('id', id).maybeSingle(),
       supabase.from('league_members').select('user_id, users(display_name, avatar_url)').eq('league_id', id).eq('status', 'active'),
       supabase.from('league_chat_reads').select('last_read_at').eq('league_id', id).eq('user_id', user.id).maybeSingle(),
+      loadMessages(),
     ]);
 
     setTeamName(teamRes.data?.name ?? 'Team');
     setTeamLogo(teamRes.data?.logo_url ?? null);
     setMembers((memberRes.data as any) ?? []);
-
-    const loaded = await loadMessages();
 
     // Work out the divider BEFORE writing the new read marker, otherwise
     // there is nothing left to mark as new.
@@ -201,12 +213,18 @@ export default function ChatScreen() {
     const rows = (data ?? []) as Msg[];
     setMessages(rows);
 
+    // Reactions, seen-by and RSVPs each depend only on the messages, so the
+    // three go out together.
     const ids = rows.map((m) => m.id);
+    const sessionIds = rows.filter((m) => m.kind === 'session').map((m) => m.id);
+    const none = Promise.resolve({ data: [] as any[] });
+    const [{ data: rows2 }, , { data: rsvps }] = await Promise.all([
+      ids.length ? supabase.from('league_message_reactions').select('message_id, user_id, kind').in('message_id', ids) : none,
+      loadSeenBy(rows),
+      sessionIds.length ? supabase.from('league_session_rsvps').select('message_id, user_id').in('message_id', sessionIds) : none,
+    ]);
+
     if (ids.length > 0) {
-      const { data: rows2 } = await supabase
-        .from('league_message_reactions')
-        .select('message_id, user_id, kind')
-        .in('message_id', ids);
       const map: Record<string, Record<string, string[]>> = {};
       (rows2 ?? []).forEach((r: any) => {
         // 'like' predates the emoji set; show those as the default heart.
@@ -215,15 +233,7 @@ export default function ChatScreen() {
       });
       setReactions(map);
     }
-
-    await loadSeenBy(rows);
-
-    const sessionIds = rows.filter((m) => m.kind === 'session').map((m) => m.id);
     if (sessionIds.length > 0) {
-      const { data: rsvps } = await supabase
-        .from('league_session_rsvps')
-        .select('message_id, user_id')
-        .in('message_id', sessionIds);
       const map: Record<string, string[]> = {};
       (rsvps ?? []).forEach((r: any) => { (map[r.message_id] ??= []).push(r.user_id); });
       setRsvpMap(map);
@@ -235,7 +245,7 @@ export default function ChatScreen() {
   // covers, and hang their avatar on it. Reading other people's markers only
   // became possible with the teammates policy added alongside this feature.
   async function loadSeenBy(rows: Msg[]) {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     const { data: reads } = await supabase
       .from('league_chat_reads')
@@ -400,70 +410,18 @@ export default function ChatScreen() {
   }
 
   function renderSession(msg: Msg) {
-    const joiners = rsvpMap[msg.id] ?? [];
-    const joined = joiners.includes(currentUserId);
-    const past = isPastSession(msg);
     return (
-      <View style={[styles.sessionCard, past && styles.sessionCardPast]}>
-        <View style={styles.sessionHead}>
-          <RivalIcon
-            name="calendar"
-            size={14}
-            color={past ? RivalColors.textSecondary : RivalColors.accentText}
-          />
-          <Text style={[styles.sessionKicker, past && styles.sessionKickerPast]}>
-            {(msg.activity_type ?? 'Session').toUpperCase()}
-          </Text>
-          {past && <Text style={styles.sessionDone}>· Completed</Text>}
-          {/* Nothing to edit once it's happened. */}
-          {!past && msg.user_id === currentUserId && (
-            <TouchableOpacity
-              onPress={() => { setEditingSession(msg); setPlanning(true); }}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              style={{ marginLeft: 'auto' }}
-            >
-              <Text style={styles.sessionEdit}>Edit</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-        {!!msg.body && <Text style={styles.sessionTitle}>{msg.body}</Text>}
-        {!!msg.scheduled_at && (
-          <Text style={styles.sessionWhen}>
-            {new Date(msg.scheduled_at).toLocaleString('en-NZ', {
-              weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit',
-            })}
-          </Text>
-        )}
-        {!!msg.location && (
-          <TouchableOpacity
-            onPress={() => openInMaps(msg.location!)}
-            style={styles.sessionWhereRow}
-            accessibilityLabel={`Open ${msg.location} in maps`}
-          >
-            <RivalIcon name="location" size={12} color={RivalColors.textSecondary} />
-            <Text style={styles.sessionWhere}>{msg.location}</Text>
-          </TouchableOpacity>
-        )}
-        <View style={styles.sessionFoot}>
-          <Text style={styles.sessionGoing}>
-            {past
-              ? `${joiners.length} ${joiners.length === 1 ? 'person' : 'people'} attended`
-              : formatAttendees(joiners, currentUserId, nameFor)}
-          </Text>
-          {/* You can't turn up to something that's finished, and an "I'm in"
-              button on a past session invites a tap that means nothing. */}
-          {!past && (
-            <TouchableOpacity
-              style={[styles.rsvpBtn, joined && styles.rsvpBtnOut]}
-              onPress={() => toggleRsvp(msg.id)}
-            >
-              <Text style={[styles.rsvpText, joined && styles.rsvpTextOut]}>
-                {joined ? "I'm out" : "I'm in"}
-              </Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
+      <SessionCard
+        session={msg}
+        attendeeIds={rsvpMap[msg.id] ?? []}
+        currentUserId={currentUserId}
+        nameFor={nameFor}
+        past={isPastSession(msg)}
+        locationCopied={copiedId === msg.id}
+        onCopyLocation={() => copyLocation(msg.id, msg.location ?? '')}
+        onEdit={() => { setEditingSession(msg); setPlanning(true); }}
+        onToggleRsvp={() => toggleRsvp(msg.id)}
+      />
     );
   }
 
@@ -476,7 +434,7 @@ export default function ChatScreen() {
         />
         {/* Crest before the name: which conversation you're in should be
             recognisable at a glance, the way it is in the teams rail. */}
-        <TouchableOpacity onPress={() => router.push({ pathname: '/league', params: { id: String(id) } })}>
+        <TouchableOpacity onPress={() => router.push({ pathname: '/team-hub', params: { id: String(id) } })}>
           {teamLogo ? (
             <Image source={{ uri: teamLogo }} style={styles.headerLogo} />
           ) : (
@@ -750,7 +708,9 @@ export default function ChatScreen() {
             onPress={() => setPlanning(true)}
             accessibilityLabel="Plan an Activity"
           >
-            <RivalIcon name="calendar" size={19} color={RivalColors.accentText} />
+            {/* 28 is the size CalendarAddIcon is pixel-snapped for — see its
+                header before changing it. */}
+            <CalendarAddIcon size={28} color={RivalColors.accentText} />
           </TouchableOpacity>
 
           {/* On web this is a contenteditable div, NOT a TextInput.
@@ -1007,28 +967,6 @@ const styles = StyleSheet.create({
   seenAvatarText: { fontSize: 7, fontWeight: '800', color: RivalColors.textSecondary },
   timeMe: { marginLeft: 0, marginRight: 4 },
 
-  sessionCard: {
-    backgroundColor: RivalColors.surfaceContainer,
-    borderRadius: RivalRadius.DEFAULT,
-    borderWidth: 1, borderColor: `${RivalColors.accentFill}44`,
-    padding: 14, gap: 4, marginTop: 12,
-  },
-  sessionHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  sessionCardPast: { opacity: 0.55, borderColor: RivalColors.outlineVariant },
-  sessionKicker: { fontSize: 11, fontWeight: '800', color: RivalColors.accentText, letterSpacing: 0.7 },
-  sessionKickerPast: { color: RivalColors.textSecondary },
-  sessionEdit: { fontSize: 11, fontWeight: '800', color: RivalColors.textSecondary, textDecorationLine: 'underline' },
-  sessionDone: { fontSize: 11, fontWeight: '700', color: RivalColors.textSecondary, letterSpacing: 0.4 },
-  sessionTitle: { fontSize: 15, fontWeight: '700', color: RivalColors.textPrimary },
-  sessionWhen: { fontSize: 13, color: RivalColors.textPrimary },
-  sessionWhereRow: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start' },
-  sessionWhere: { fontSize: 13, color: RivalColors.textSecondary, textDecorationLine: 'underline' },
-  sessionFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
-  sessionGoing: { fontSize: 12, color: RivalColors.textSecondary },
-  rsvpBtn: { backgroundColor: RivalColors.accentFill, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 7 },
-  rsvpBtnOut: { backgroundColor: 'transparent', borderWidth: 1, borderColor: RivalColors.surfaceContainerHigh },
-  rsvpText: { fontSize: 13, fontWeight: '700', color: RivalColors.textPrimary },
-  rsvpTextOut: { color: RivalColors.textSecondary },
 
   error: { color: RivalColors.error, fontSize: 13, paddingHorizontal: 16, paddingBottom: 6 },
 

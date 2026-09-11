@@ -14,13 +14,13 @@
 // Either way this writes straight onto the existing `leagues` row
 // (leagues_team_goal.sql columns) team-hub.tsx already reads, so no new
 // schema and team-hub's hero/standings pick it up as-is.
-import { useEffect, useState } from 'react';
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ImageBackground, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
-import { RivalIcon, RivalIconName, RivalPageHeader, RivalBackButton } from '../components/rival';
-import { RivalColors, RivalRadius, RivalSpacing } from '../constants/rivalTheme';
+import { supabase, getAuthUser } from '../lib/supabase';
+import { RivalIcon, RivalIconName, RivalBackButton } from '../components/rival';
+import { RivalColors, RivalRadius, RivalSerifFamily, RivalSpacing } from '../constants/rivalTheme';
 
 type GoalMetric = 'xp' | 'distance' | 'elevation' | 'duration' | 'activities';
 type Mode = 'target' | 'race';
@@ -118,6 +118,26 @@ function MonthCalendarPicker({ value, onChange }: { value: string | null; onChan
   );
 }
 
+// Same photo as the Team Challenge hero on Team Hub, so editing the challenge
+// feels like the same place you tapped into it from.
+const HERO_PHOTO = require('../../assets/images/backgrounds/optimized/coastal-highway-triathlete-dusk-3.jpg');
+
+const WARM_GRADIENT = 'linear-gradient(225deg, #FFB86B 0%, #FF8773 100%)';
+
+// A numbered step in its own panel — the form reads as three decisions in
+// order rather than one long stack of labels and chips.
+function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.step}>
+      <View style={styles.stepHead}>
+        <View style={styles.stepBadge}><Text style={styles.stepBadgeText}>{n}</Text></View>
+        <Text style={styles.stepTitle}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+}
+
 export default function CreateTeamChallenge() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [mode, setMode] = useState<Mode>('target');
@@ -134,12 +154,43 @@ export default function CreateTeamChallenge() {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True when the team already has a challenge. The same page then edits it:
+  // Team Hub opens it from the challenge ring, and it arrives filled in with
+  // what's running now instead of blank.
+  const [editing, setEditing] = useState(false);
 
   const selectedMetric = METRICS.find((m) => m.value === metric)!;
 
   useEffect(() => {
+    if (!id) return;
+    supabase
+      .from('leagues')
+      .select('goal_metric, goal_target, goal_target_date, race_id')
+      .eq('id', id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!data) return;
+        if (data.race_id) {
+          setEditing(true);
+          setMode('race');
+          setSelectedRaceId(data.race_id);
+        } else if (data.goal_metric && data.goal_target) {
+          setEditing(true);
+          setMode('target');
+          setMetric(data.goal_metric as GoalMetric);
+          setTarget(String(data.goal_target));
+          // The existing due date is a specific day, so it's shown as one.
+          if (data.goal_target_date) {
+            setDuration('custom');
+            setCustomDate(data.goal_target_date);
+          }
+        }
+      });
+  }, [id]);
+
+  useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) return;
       const { data } = await supabase
         .from('races')
@@ -197,162 +248,270 @@ export default function CreateTeamChallenge() {
     router.replace({ pathname: '/team-hub', params: { id } });
   }
 
+  const targetNum = parseFloat(target);
+  const hasTarget = Number.isFinite(targetNum) && targetNum > 0;
+  const dueDate = duration === 'custom'
+    ? (customDate ? new Date(customDate + 'T00:00:00') : null)
+    : new Date(Date.now() + duration * 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  const selectedRace = myRaces.find((r) => r.id === selectedRaceId);
+
   return (
-    <SafeAreaView style={styles.screen} edges={['top', 'left', 'right']}>
-      <View style={styles.topRow}>
-        <RivalBackButton onPress={() => router.back()} style={styles.backBtn} />
-      </View>
-
-      <RivalPageHeader title="Start a Team Challenge" subtitle="One shared number, everyone's effort counts toward it." />
-
-      <View style={styles.body}>
-        <View style={styles.modeRow}>
-          <TouchableOpacity style={[styles.modeTab, mode === 'target' && styles.modeTabActive]} onPress={() => setMode('target')}>
-            <Text style={[styles.modeTabText, mode === 'target' && styles.modeTabTextActive]}>Team Target</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.modeTab, mode === 'race' && styles.modeTabActive]} onPress={() => setMode('race')}>
-            <Text style={[styles.modeTabText, mode === 'race' && styles.modeTabTextActive]}>Working Toward a Race</Text>
-          </TouchableOpacity>
-        </View>
-
-        {mode === 'target' ? (
-          <>
-            <Text style={styles.label}>What are you chasing?</Text>
-            <View style={styles.metricRow}>
-              {METRICS.map((m) => (
-                <TouchableOpacity
-                  key={m.value}
-                  style={[styles.metricChip, metric === m.value && styles.metricChipActive]}
-                  onPress={() => setMetric(m.value)}
-                >
-                  <RivalIcon name={m.icon} size={16} color={metric === m.value ? RivalColors.onAccentFill : RivalColors.accentText} />
-                  <Text style={[styles.metricChipText, metric === m.value && styles.metricChipTextActive]}>{m.label}</Text>
-                </TouchableOpacity>
-              ))}
+    <View style={styles.screen}>
+      <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+        {/* The page must scroll: the app's frame is fixed to the screen height,
+            so without this everything below the fold was cut off. */}
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: 60 }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <ImageBackground source={HERO_PHOTO} style={styles.hero} resizeMode="cover">
+            <View style={styles.heroShade} pointerEvents="none" />
+            <View style={styles.topRow}>
+              <RivalBackButton onPress={() => router.back()} color="#fff" style={styles.backBtn} />
             </View>
+            <View style={styles.heroText}>
+              <Text style={styles.kicker}>TEAM CHALLENGE</Text>
+              <Text style={styles.heroTitle}>{editing ? 'Edit Team Challenge' : 'Start a Team Challenge'}</Text>
+              <Text style={styles.heroSub}>One shared number. Everyone's effort counts toward it.</Text>
+            </View>
+          </ImageBackground>
 
-            <Text style={styles.label}>Target</Text>
-            <View style={styles.targetRow}>
-              <View style={styles.targetInputWrap}>
-                <TextInput
-                  style={styles.targetInput}
-                  placeholder="e.g. 1000"
-                  placeholderTextColor="rgba(255,255,255,0.3)"
-                  value={target}
-                  onChangeText={setTarget}
-                  keyboardType="decimal-pad"
-                />
+          <View style={styles.body}>
+            {/* Live preview: the challenge as it will read, updating as you
+                choose, so the form isn't a blind series of inputs. */}
+            <View style={styles.preview}>
+              <View style={styles.previewIcon}>
+                <RivalIcon name={mode === 'target' ? selectedMetric.icon : 'flag'} size={24} color="#1a1411" />
               </View>
-              <Text style={styles.targetUnit}>{selectedMetric.unit}</Text>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                {mode === 'target' ? (
+                  <>
+                    <Text style={styles.previewKicker}>{selectedMetric.label.toUpperCase()}</Text>
+                    {hasTarget ? (
+                      <Text style={styles.previewValue}>
+                        {targetNum.toLocaleString()} <Text style={styles.previewUnit}>{selectedMetric.unit}</Text>
+                      </Text>
+                    ) : (
+                      <Text style={styles.previewEmpty}>Set a target</Text>
+                    )}
+                    <Text style={styles.previewDue}>{dueDate ? `Due ${fmt(dueDate)}` : 'Choose a due date'}</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.previewKicker}>RACE</Text>
+                    <Text style={styles.previewValue} numberOfLines={2}>{selectedRace ? selectedRace.name : 'Choose a race'}</Text>
+                    {!!selectedRace && <Text style={styles.previewDue}>{fmt(new Date(selectedRace.race_date + 'T00:00:00'))}</Text>}
+                  </>
+                )}
+              </View>
             </View>
 
-            <Text style={styles.label}>Complete By</Text>
-            <View style={styles.durationRow}>
-              {DURATIONS.map((d) => (
-                <TouchableOpacity
-                  key={d.days}
-                  style={[styles.durationChip, duration === d.days && styles.durationChipActive]}
-                  onPress={() => setDuration(d.days)}
-                >
-                  <Text style={[styles.durationChipText, duration === d.days && styles.durationChipTextActive]}>{d.label}</Text>
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                style={[styles.durationChip, duration === 'custom' && styles.durationChipActive]}
-                onPress={() => setDuration('custom')}
-              >
-                <Text style={[styles.durationChipText, duration === 'custom' && styles.durationChipTextActive]}>Custom Date</Text>
+            <View style={styles.modeRow}>
+              <TouchableOpacity style={[styles.modeTab, mode === 'target' && styles.modeTabActive]} onPress={() => setMode('target')}>
+                <Text style={[styles.modeTabText, mode === 'target' && styles.modeTabTextActive]}>Team Target</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modeTab, mode === 'race' && styles.modeTabActive]} onPress={() => setMode('race')}>
+                <Text style={[styles.modeTabText, mode === 'race' && styles.modeTabTextActive]}>Race Goal</Text>
               </TouchableOpacity>
             </View>
 
-            {duration === 'custom' && (
-              <View style={styles.dateCard}>
-                <Text style={[styles.selectedDateText, !customDate && styles.selectedDateTextEmpty]}>
-                  {customDate ? new Date(customDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : 'No date selected yet'}
-                </Text>
-                <MonthCalendarPicker value={customDate} onChange={setCustomDate} />
-              </View>
-            )}
-          </>
-        ) : (
-          <>
-            <Text style={styles.label}>Which race?</Text>
-            {myRaces.length === 0 ? (
-              <Text style={styles.emptyRaceText}>No upcoming races on your profile yet — add one from Races first.</Text>
-            ) : (
-              <View style={{ gap: 8 }}>
-                {myRaces.map((r) => (
-                  <TouchableOpacity
-                    key={r.id}
-                    style={[styles.raceRow, selectedRaceId === r.id && styles.raceRowActive]}
-                    onPress={() => setSelectedRaceId(r.id)}
-                  >
-                    <RivalIcon name="flag" size={16} color={selectedRaceId === r.id ? RivalColors.onAccentFill : '#ff5c5c'} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.raceRowName, selectedRaceId === r.id && styles.raceRowTextActive]}>{r.name}</Text>
-                      <Text style={[styles.raceRowDate, selectedRaceId === r.id && styles.raceRowTextActive]}>
-                        {new Date(r.race_date + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+            {mode === 'target' ? (
+              <>
+                <Step n={1} title="What are you chasing?">
+                  <View style={styles.metricGrid}>
+                    {METRICS.map((m) => {
+                      const on = metric === m.value;
+                      return (
+                        <TouchableOpacity key={m.value} style={[styles.metricTile, on && styles.metricTileOn]} onPress={() => setMetric(m.value)}>
+                          <View style={[styles.metricIcon, on && styles.metricIconOn]}>
+                            <RivalIcon name={m.icon} size={20} color={on ? '#1a1411' : RivalColors.accentText} />
+                          </View>
+                          <Text style={[styles.metricTileText, on && styles.metricTileTextOn]}>{m.label}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </Step>
+
+                <Step n={2} title="Target">
+                  <View style={styles.targetWell}>
+                    <TextInput
+                      style={styles.targetInput}
+                      placeholder="1000"
+                      placeholderTextColor="rgba(255,255,255,0.25)"
+                      value={target}
+                      onChangeText={(v) => setTarget(v.replace(/[^0-9.]/g, ''))}
+                      keyboardType="decimal-pad"
+                    />
+                    <Text style={styles.targetUnit}>{selectedMetric.unit}</Text>
+                  </View>
+                </Step>
+
+                <Step n={3} title="Complete by">
+                  <View style={styles.durationRow}>
+                    {DURATIONS.map((d) => (
+                      <TouchableOpacity
+                        key={d.days}
+                        style={[styles.durationChip, duration === d.days && styles.durationChipActive]}
+                        onPress={() => setDuration(d.days)}
+                      >
+                        <Text style={[styles.durationChipText, duration === d.days && styles.durationChipTextActive]}>{d.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    <TouchableOpacity
+                      style={[styles.durationChip, duration === 'custom' && styles.durationChipActive]}
+                      onPress={() => setDuration('custom')}
+                    >
+                      <Text style={[styles.durationChipText, duration === 'custom' && styles.durationChipTextActive]}>Custom Date</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {duration === 'custom' && (
+                    <View style={styles.dateCard}>
+                      <Text style={[styles.selectedDateText, !customDate && styles.selectedDateTextEmpty]}>
+                        {customDate ? new Date(customDate + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : 'No date selected yet'}
                       </Text>
+                      <MonthCalendarPicker value={customDate} onChange={setCustomDate} />
                     </View>
-                  </TouchableOpacity>
-                ))}
-              </View>
+                  )}
+                </Step>
+              </>
+            ) : (
+              <Step n={1} title="Which race?">
+                {myRaces.length === 0 ? (
+                  <Text style={styles.emptyRaceText}>No upcoming races on your profile yet. Add one from Races first.</Text>
+                ) : (
+                  <View style={{ gap: 8 }}>
+                    {myRaces.map((r) => (
+                      <TouchableOpacity
+                        key={r.id}
+                        style={[styles.raceRow, selectedRaceId === r.id && styles.raceRowActive]}
+                        onPress={() => setSelectedRaceId(r.id)}
+                      >
+                        <RivalIcon name="flag" size={16} color={selectedRaceId === r.id ? '#1a1411' : RivalColors.accentText} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.raceRowName, selectedRaceId === r.id && styles.raceRowTextActive]}>{r.name}</Text>
+                          <Text style={[styles.raceRowDate, selectedRaceId === r.id && styles.raceRowTextActive]}>
+                            {new Date(r.race_date + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </Step>
             )}
-          </>
-        )}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+            {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <TouchableOpacity style={[styles.createBtn, saving && styles.createBtnDisabled]} onPress={handleCreate} disabled={saving}>
-          <Text style={styles.createBtnText}>{saving ? 'Starting…' : 'Start Challenge'}</Text>
-        </TouchableOpacity>
-      </View>
-    </SafeAreaView>
+            <TouchableOpacity style={[styles.createBtn, saving && styles.createBtnDisabled]} onPress={handleCreate} disabled={saving}>
+              <Text style={styles.createBtnText}>{saving ? 'Saving…' : editing ? 'Save Changes' : 'Start Challenge'}</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#131313' },
+
+  // overflow hidden is load-bearing: on web the photo isn't clipped to its
+  // container by default, and it painted down behind the whole form.
+  hero: { minHeight: 250, justifyContent: 'space-between', overflow: 'hidden' },
+  heroShade: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    ...(Platform.OS === 'web'
+      ? { backgroundImage: 'linear-gradient(180deg, rgba(19,19,19,0.15) 0%, rgba(19,19,19,0.55) 55%, #131313 100%)' }
+      : { backgroundColor: 'rgba(19,19,19,0.55)' }),
+  } as any,
   topRow: { paddingHorizontal: RivalSpacing.gutter, paddingTop: 8 },
-  backBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  body: { paddingHorizontal: RivalSpacing.gutter, paddingBottom: 40, maxWidth: 480, width: '100%', alignSelf: 'center' },
-  label: { fontSize: 11, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', color: 'rgba(255,255,255,0.5)', marginTop: 24, marginBottom: 10 },
-
-  modeRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  modeTab: { flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: RivalRadius.DEFAULT, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', backgroundColor: 'rgba(255,255,255,0.04)' },
-  modeTabActive: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
-  modeTabText: { fontSize: 13, fontWeight: '700', color: 'rgba(255,255,255,0.6)' },
-  modeTabTextActive: { color: RivalColors.onAccentFill },
-
-  metricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  metricChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    borderRadius: RivalRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-    paddingHorizontal: 14, paddingVertical: 9, backgroundColor: 'rgba(255,255,255,0.04)',
+  backBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.35)' },
+  heroText: { paddingHorizontal: RivalSpacing.gutter, paddingBottom: 18, alignItems: 'center' },
+  kicker: { fontSize: 11, fontWeight: '800', letterSpacing: 2, color: RivalColors.accentText },
+  heroTitle: {
+    fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 28, color: '#fff', marginTop: 4, textAlign: 'center',
+    textShadowColor: 'rgba(0,0,0,0.6)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4,
   },
-  metricChipActive: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
-  metricChipText: { fontSize: 13, fontWeight: '600', color: RivalColors.accentText },
-  metricChipTextActive: { color: RivalColors.onAccentFill },
+  heroSub: { fontSize: 13.5, color: 'rgba(255,255,255,0.8)', marginTop: 6, textAlign: 'center' },
 
-  targetRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  targetInputWrap: { flex: 1 },
-  targetInput: {
-    borderRadius: RivalRadius.DEFAULT, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 16, fontWeight: '700', color: '#fff',
+  body: { paddingHorizontal: RivalSpacing.gutter, gap: 16, maxWidth: 480, width: '100%', alignSelf: 'center' },
+
+  preview: {
+    flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, borderRadius: 22,
+    backgroundColor: '#1f1b19', borderWidth: 1, borderColor: `${RivalColors.accentFill}55`,
+    ...(Platform.OS === 'web' ? { boxShadow: '0 10px 30px rgba(217,119,87,0.14)' } : {}),
+  } as any,
+  previewIcon: {
+    width: 56, height: 56, borderRadius: 16, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: RivalColors.accentText,
+    ...(Platform.OS === 'web' ? { backgroundImage: WARM_GRADIENT } : {}),
+  } as any,
+  previewKicker: { fontSize: 10.5, fontWeight: '800', letterSpacing: 1.6, color: RivalColors.accentText },
+  previewValue: { fontSize: 26, fontWeight: '800', color: '#fff', letterSpacing: -0.4, marginTop: 1 },
+  previewUnit: { fontSize: 15, fontWeight: '700', color: 'rgba(255,255,255,0.6)' },
+  previewEmpty: { fontSize: 20, fontWeight: '700', color: 'rgba(255,255,255,0.4)', marginTop: 3 },
+  previewDue: { fontSize: 13, color: 'rgba(255,255,255,0.65)', marginTop: 1 },
+
+  modeRow: {
+    flexDirection: 'row', padding: 4, borderRadius: RivalRadius.full,
+    backgroundColor: RivalColors.surfaceLowest, borderWidth: 1, borderColor: RivalColors.surfaceBright,
   },
-  targetUnit: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.5)', minWidth: 56 },
+  modeTab: { flex: 1, minHeight: 42, borderRadius: RivalRadius.full, alignItems: 'center', justifyContent: 'center' },
+  modeTabActive: { backgroundColor: RivalColors.surfaceBright },
+  modeTabText: { fontSize: 13, fontWeight: '700', color: RivalColors.textSecondary },
+  modeTabTextActive: { color: '#fff' },
+
+  step: {
+    padding: 16, borderRadius: 20, gap: 12,
+    backgroundColor: 'rgba(255,255,255,0.03)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  stepHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  stepBadge: {
+    width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: `${RivalColors.accentFill}26`, borderWidth: 1, borderColor: `${RivalColors.accentFill}66`,
+  },
+  stepBadgeText: { fontSize: 12.5, fontWeight: '800', color: RivalColors.accentText },
+  stepTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: '#fff' },
+
+  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  metricTile: {
+    flexBasis: '30%', flexGrow: 1, alignItems: 'center', gap: 8, paddingVertical: 14, borderRadius: 16,
+    backgroundColor: RivalColors.surfaceLowest, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  metricTileOn: { borderColor: RivalColors.accentText, backgroundColor: `${RivalColors.accentFill}22` },
+  metricIcon: {
+    width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: `${RivalColors.accentFill}1f`,
+  },
+  metricIconOn: {
+    backgroundColor: RivalColors.accentText,
+    ...(Platform.OS === 'web' ? { backgroundImage: WARM_GRADIENT } : {}),
+  } as any,
+  metricTileText: { fontSize: 13, fontWeight: '700', color: RivalColors.textSecondary },
+  metricTileTextOn: { color: '#fff' },
+
+  targetWell: {
+    flexDirection: 'row', alignItems: 'baseline', gap: 10, paddingHorizontal: 18, paddingVertical: 8, borderRadius: 16,
+    backgroundColor: RivalColors.surfaceLowest, borderWidth: 1, borderColor: RivalColors.surfaceBright,
+  },
+  targetInput: { flex: 1, minWidth: 0, fontSize: 34, fontWeight: '800', color: '#fff', paddingVertical: 6, letterSpacing: -0.5 },
+  targetUnit: { fontSize: 16, fontWeight: '700', color: 'rgba(255,255,255,0.55)' },
 
   durationRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   durationChip: {
-    borderRadius: RivalRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-    paddingHorizontal: 16, paddingVertical: 9, backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: RivalRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 15, paddingVertical: 9, backgroundColor: RivalColors.surfaceLowest,
   },
-  durationChipActive: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
-  durationChipText: { fontSize: 13, fontWeight: '600', color: RivalColors.accentText },
-  durationChipTextActive: { color: RivalColors.onAccentFill },
+  durationChipActive: { backgroundColor: RivalColors.accentText, borderColor: RivalColors.accentText },
+  durationChipText: { fontSize: 13, fontWeight: '700', color: RivalColors.textSecondary },
+  durationChipTextActive: { color: RivalColors.surfaceLowest },
 
-  dateCard: { backgroundColor: 'rgba(0,0,0,0.38)', borderRadius: RivalRadius.DEFAULT, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', padding: 14, gap: 8, marginTop: 14 },
+  dateCard: { backgroundColor: RivalColors.surfaceLowest, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', padding: 14, gap: 8 },
   selectedDateText: { fontSize: 14, fontWeight: '700', color: '#fff', textAlign: 'center' },
   selectedDateTextEmpty: { fontWeight: '400', color: 'rgba(255,255,255,0.4)' },
 
@@ -369,18 +528,21 @@ const styles = StyleSheet.create({
 
   emptyRaceText: { fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 18 },
   raceRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 12,
-    borderRadius: RivalRadius.DEFAULT, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.04)', padding: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 16,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', backgroundColor: RivalColors.surfaceLowest, padding: 14,
   },
-  raceRowActive: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
+  raceRowActive: { backgroundColor: RivalColors.accentText, borderColor: RivalColors.accentText },
   raceRowName: { fontSize: 14, fontWeight: '700', color: '#fff' },
   raceRowDate: { fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 },
-  raceRowTextActive: { color: RivalColors.onAccentFill },
+  raceRowTextActive: { color: '#1a1411' },
 
-  error: { color: '#ff6b6b', fontSize: 13, marginTop: 20, textAlign: 'center' },
+  error: { color: '#ff9b8f', fontSize: 13, textAlign: 'center' },
 
-  createBtn: { marginTop: 32, backgroundColor: RivalColors.accentFill, borderRadius: RivalRadius.full, paddingVertical: 16, alignItems: 'center' },
+  createBtn: {
+    marginTop: 8, minHeight: 54, borderRadius: RivalRadius.full, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: RivalColors.accentText,
+    ...(Platform.OS === 'web' ? { backgroundImage: WARM_GRADIENT, boxShadow: '0 10px 28px rgba(255,135,115,0.3)' } : {}),
+  } as any,
   createBtnDisabled: { opacity: 0.6 },
-  createBtnText: { fontSize: 15, fontWeight: '800', letterSpacing: 0.5, color: RivalColors.onAccentFill, textTransform: 'uppercase' },
+  createBtnText: { fontSize: 16, fontWeight: '800', letterSpacing: 0.2, color: '#1a1411' },
 });

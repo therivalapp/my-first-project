@@ -3,7 +3,7 @@ import { RivalColors } from '../constants/rivalTheme';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { formatDisplayName, IdentityUser } from '../lib/identity';
 import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
 
@@ -39,7 +39,7 @@ export default function FriendsScreen() {
   }, []);
 
   async function init() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setCurrentUserId(user.id);
     await loadFriends(user.id);

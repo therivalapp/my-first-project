@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Image, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { getLevel, xpProgressInLevel, LEVELS } from '../lib/xp';
 import { calculateStreak, StreakResult } from '../lib/streak';
@@ -44,7 +44,7 @@ export default function StatsScreen() {
   }, []);
 
   async function loadStats() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setLoading(false); return; }
     setCurrentAuthUserId(user.id);
 
@@ -56,9 +56,18 @@ export default function StatsScreen() {
       setMemberSince(d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }));
     }
 
-    const [userRes, activitiesRes] = await Promise.all([
+    // Milestones, race ids and past seasons don't depend on the activities,
+    // so they load alongside them instead of one after another afterwards.
+    const [userRes, activitiesRes, { data: milestonesData }, { data: myRaceIdsData }, { data: seasonResultsData }] = await Promise.all([
       supabase.from('users').select('display_name, avatar_url').eq('id', targetUserId).single(),
       fetchAllActivities(targetUserId, 'id, effort_score, started_at, distance_meters, elevation_meters, duration_seconds, activity_type'),
+      supabase.from('milestones').select('type').eq('user_id', targetUserId),
+      supabase.from('races').select('id').eq('user_id', targetUserId),
+      supabase
+        .from('season_results')
+        .select('final_xp, final_rank_name, seasons(year)')
+        .eq('user_id', targetUserId)
+        .order('seasons(year)', { ascending: false }),
     ]);
 
     setDisplayName(userRes.data?.display_name || (!viewingOther ? user.user_metadata?.display_name : '') || 'Athlete');
@@ -81,13 +90,11 @@ export default function StatsScreen() {
     const HARD_TYPES = new Set(['CrossFit', 'Hyrox', 'HIIT', 'Bootcamp', 'Run', 'Swim', 'Ride', 'WeightTraining', 'Rowing']);
     setHardTimeMinutes(Math.round(activities.filter(a => HARD_TYPES.has(a.activity_type)).reduce((sum, a) => sum + (a.duration_seconds || 0), 0) / 60));
 
-    const { data: milestonesData } = await supabase.from('milestones').select('type').eq('user_id', targetUserId);
     setEarnedMilestones((milestonesData || []).map((m: any) => m.type));
 
     // Activity ids come from the full fetch above — no second query, and no
     // 1000-row cap undercounting Impact for heavy importers.
     const myActivityIds = activities.map((a: any) => a.id);
-    const { data: myRaceIdsData } = await supabase.from('races').select('id').eq('user_id', targetUserId);
     const myRaceIds = (myRaceIdsData || []).map((r: any) => r.id);
     const reactionQueries: PromiseLike<{ data: { user_id: string }[] | null }>[] = [];
     if (myActivityIds.length > 0) reactionQueries.push(supabase.from('feed_reactions').select('user_id').eq('target_type', 'activity').eq('emoji', 'inspired').in('target_id', myActivityIds));
@@ -117,12 +124,6 @@ export default function StatsScreen() {
     setThisWeekPoints(Math.round(weekTotal * 10) / 10);
 
     setStreak(calculateStreak(activities));
-
-    const { data: seasonResultsData } = await supabase
-      .from('season_results')
-      .select('final_xp, final_rank_name, seasons(year)')
-      .eq('user_id', targetUserId)
-      .order('seasons(year)', { ascending: false });
 
     setPastSeasons(
       (seasonResultsData || []).map((r: any) => ({

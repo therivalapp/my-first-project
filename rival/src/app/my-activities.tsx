@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, ImageBackground, useWindowDimensions, RefreshControl } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { formatDuration, formatDurationClock } from '../lib/format';
 import { calculateStreak } from '../lib/streak';
@@ -373,7 +373,7 @@ export default function MyActivitiesScreen() {
   }, []));
 
   async function loadActivities() {
-    let { data: { user } } = await supabase.auth.getUser();
+    let { data: { user } } = await getAuthUser();
     if (!user) {
       const { data: refreshed } = await supabase.auth.refreshSession();
       user = refreshed.user;

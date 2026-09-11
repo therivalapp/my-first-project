@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { confirmAction, notify } from '../lib/notify';
 import { formatDisplayName, formatRaceName } from '../lib/identity';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
@@ -231,7 +231,7 @@ export default function RacesScreen() {
   useFocusEffect(useCallback(() => { load(); }, []));
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setUserId(user.id);
 

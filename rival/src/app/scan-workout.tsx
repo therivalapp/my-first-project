@@ -3,7 +3,7 @@ import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Image, Platform, 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { calculateEffortScore, loadScoringConfig } from '../lib/effort';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { findMatchingRaceId } from '../lib/raceMatch';
@@ -666,7 +666,7 @@ export default function ScanWorkoutScreen() {
     setFieldError(null);
     setGeneralError(null);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) return;
 
       const durationMinutes = extractedWorkout.duration / 60;

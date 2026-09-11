@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { View, Text, TouchableOpacity, Image, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useIsFocused, usePathname } from 'expo-router';
-import { supabase } from '../../lib/supabase';
+import { supabase, getAuthUser } from '../../lib/supabase';
 import { getLevel } from '../../lib/xp';
 import { getSeasonStartISO } from '../../lib/season';
 import { getUnreadChats } from '../../lib/unreadChats';
@@ -133,7 +133,7 @@ export function RivalTopNav({ active, centerSlot, hideBar, action }: {
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getAuthUser();
       if (!user) return;
 
       const [{ data: profile }, { data: seasonActs }] = await Promise.all([

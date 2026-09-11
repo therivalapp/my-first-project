@@ -3,7 +3,7 @@ import { RivalColors } from '../constants/rivalTheme';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 import { ACTIVITY_ICONS } from '../constants/activityIcons';
 import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
@@ -58,7 +58,7 @@ export default function PlanScreen() {
   useFocusEffect(useCallback(() => { load(); }, []));
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setUserId(user.id);
 
@@ -299,7 +299,7 @@ export default function PlanScreen() {
                         <View key={member.user_id} style={[styles.miniRow, isMe && styles.miniRowMe]}>
                           <Text style={styles.miniRank}>{idx + 1}.</Text>
                           <Text style={[styles.miniName, isMe && { color: RivalColors.textPrimary, fontWeight: '800' }]}>
-                            {isMe ? 'You' : member.name}
+                            {member.name}
                           </Text>
                           <View style={styles.miniScoreBlock}>
                             <Text style={[styles.miniScore, isMe && { color: RivalColors.accentFill }]}>

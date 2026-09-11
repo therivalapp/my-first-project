@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, useWindowDimensions, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { connectStrava, runFullStravaImport } from '../lib/strava';
 import { getQuote, QuoteTone } from '../lib/quotes';
@@ -106,7 +106,7 @@ export default function ProfileScreen() {
   }
 
   async function loadProfile() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setLoading(false); return; }
     setCurrentAuthUserId(user.id);
 
@@ -140,7 +140,7 @@ export default function ProfileScreen() {
   async function saveName() {
     if (!newName.trim()) return;
     setSaving(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setSaving(false); return; }
     const { error } = await supabase.from('users').update({ display_name: newName.trim() }).eq('id', user.id);
     if (error) {
@@ -159,7 +159,7 @@ export default function ProfileScreen() {
   async function saveBio() {
     const trimmed = newBio.trim();
     setSavingBio(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setSavingBio(false); return; }
     const { error } = await supabase.from('users').update({ bio: trimmed || null }).eq('id', user.id);
     if (error) { notify("Couldn't save bio", error.message); setSavingBio(false); return; }
@@ -170,7 +170,7 @@ export default function ProfileScreen() {
 
   async function updateQuoteTone(tone: QuoteTone) {
     setSavingTone(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) { setSavingTone(false); return; }
     const { error } = await supabase.from('users').update({ quote_tone: tone }).eq('id', user.id);
     if (error) {
@@ -193,7 +193,7 @@ export default function ProfileScreen() {
       if (!file) return;
       setUploadingAvatar(true);
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user } } = await getAuthUser();
         if (!user) return;
         const ext = file.name.split('.').pop() || 'jpg';
         const path = `${user.id}/avatar.${ext}`;
@@ -220,7 +220,7 @@ export default function ProfileScreen() {
   }
 
   async function disconnectStrava(wipeActivities: boolean) {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setDisconnecting(true);
     // The connection row is the thing that actually keeps Strava linked. If this

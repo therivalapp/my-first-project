@@ -3,7 +3,7 @@ import { RivalColors } from '../constants/rivalTheme';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { ACHIEVEMENTS, CATEGORY_LABELS, checkAchievements } from '../lib/achievements';
 import { calculateStreak } from '../lib/streak';
@@ -17,7 +17,7 @@ export default function AchievementsScreen() {
   useEffect(() => { load(); }, []);
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
 
     // started_at is required by calculateStreak — without it every row is

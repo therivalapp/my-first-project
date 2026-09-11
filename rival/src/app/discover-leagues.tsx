@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Image, useWindowDimensions, Platform, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { RivalTopNav, RivalIcon, RivalFixedBackground } from '../components/rival';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
@@ -74,7 +74,7 @@ export default function DiscoverLeaguesScreen() {
   }
 
   async function load() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
 
     const [publicRes, membershipRes, activeMembersRes, publicCountsRes] = await Promise.all([
@@ -283,7 +283,7 @@ export default function DiscoverLeaguesScreen() {
   // already-pinned team again; a 4th pin attempt is a no-op rather than
   // bumping an existing pin — explicit unpin first, no surprise evictions.
   async function togglePin(leagueId: string) {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     const wasPinned = myTeams.find(t => t.id === leagueId)?.pinned;
     const pinnedCount = myTeams.filter(t => t.pinned).length;
@@ -302,7 +302,7 @@ export default function DiscoverLeaguesScreen() {
   }
 
   async function join(leagueId: string) {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await getAuthUser();
     if (!user) return;
     setJoining(leagueId);
     setJoinError(null);
@@ -391,7 +391,7 @@ export default function DiscoverLeaguesScreen() {
                     wide={wide}
                     members={memberLabel(team.member_count)}
                     fallbackIconName={fallbackIcon(team.id)}
-                    onPress={() => router.push({ pathname: '/league', params: { id: team.id } })}
+                    onPress={() => router.push({ pathname: '/team-hub', params: { id: team.id } })}
                     onTogglePin={() => togglePin(team.id)}
                   />
                 ))}
