@@ -288,6 +288,25 @@ Deno.serve(async (req) => {
         : Promise.resolve(),
     ])
 
+    // Everything this function writes to storage is transit, not content: the
+    // base photo and route map exist only so OpenAI can fetch them by URL, and
+    // the raw output only lives long enough for the client to upscale it. None
+    // of it is ever referenced again, so sweep this user's leftovers from past
+    // runs before adding more. Best-effort — a failed sweep must not block the
+    // generation the user is waiting on.
+    const sweepTemps = async () => {
+      try {
+        const { data: old } = await supabase.storage.from('activity-photos').list(user.id, { limit: 1000 })
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000
+        const stale = (old ?? [])
+          .filter((f) => /share-input-|share-route-|-raw-/.test(f.name))
+          .filter((f) => new Date(f.created_at ?? 0).getTime() < cutoff)
+          .map((f) => `${user.id}/${f.name}`)
+        if (stale.length) await supabase.storage.from('activity-photos').remove(stale)
+      } catch { /* sweeping is housekeeping, never fatal */ }
+    }
+    sweepTemps()
+
     const photoUrl = providedPhotoUrl
       ?? supabase.storage.from('activity-photos').getPublicUrl(photoFileName!).data.publicUrl
     const routeImageUrl = routeFileName
@@ -337,6 +356,16 @@ Deno.serve(async (req) => {
       const refusalMsg = openaiData?.output?.find((o: any) => o.type === 'message')
       if (refusalMsg) refused = true
       lastError = JSON.stringify(openaiData?.output ?? 'no output')
+    }
+
+    // OpenAI has fetched them by now, so the base photo and route map have served
+    // their whole purpose. Drop them here rather than leaving them for the sweep,
+    // on the failure path too — a refused generation still uploaded its inputs.
+    // (When the caller passed an existing activity photo by URL, photoFileName is
+    // null and that photo is left alone — it is real content, not transit.)
+    const transit = [photoFileName, routeFileName].filter(Boolean) as string[]
+    if (transit.length) {
+      try { await supabase.storage.from('activity-photos').remove(transit) } catch { /* housekeeping */ }
     }
 
     if (!generatedB64) {
