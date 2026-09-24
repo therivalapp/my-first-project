@@ -6,6 +6,7 @@ import { router, useIsFocused, usePathname } from 'expo-router';
 import { supabase, getAuthUser } from '../../lib/supabase';
 import { getLevel } from '../../lib/xp';
 import { getSeasonStartISO } from '../../lib/season';
+import { fetchInboxBadgeCount, onInboxChanged } from '../../lib/inbox';
 import { getUnreadChats } from '../../lib/unreadChats';
 import { RivalColors, RivalType } from '../../constants/rivalTheme';
 import { BREAKPOINT_MOBILE_NAV } from '../../constants/breakpoints';
@@ -53,6 +54,21 @@ export function RivalTopNav({ active, centerSlot, hideBar, action }: {
       .then((r) => { if (!cancelled) setUnreadChats(r.count); })
       .catch(() => {});
     return () => { cancelled = true; };
+  }, [pathname]);
+
+  const [inboxCount, setInboxCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      fetchInboxBadgeCount()
+        .then((n) => { if (!cancelled) setInboxCount(n); })
+        .catch(() => {});
+    };
+    refresh();
+    // Acting on an item does not navigate, so without this the badge would keep
+    // claiming work that was just done.
+    const unsubscribe = onInboxChanged(refresh);
+    return () => { cancelled = true; unsubscribe(); };
   }, [pathname]);
 
   const { width } = useWindowDimensions();
@@ -299,10 +315,15 @@ export function RivalTopNav({ active, centerSlot, hideBar, action }: {
               <RivalIcon name={action.icon} size={narrow ? 21 : 22} color={RivalColors.accentText} />
             </TouchableOpacity>
           )}
-          <TouchableOpacity onPress={() => router.push('/profile?tab=notifications')} style={[styles.notifBtn, narrow && styles.notifBtnNarrow]}>
+          <TouchableOpacity onPress={() => router.push('/inbox')} style={[styles.notifBtn, narrow && styles.notifBtnNarrow]}>
             {/* Mockup's mobile header uses the plain calm bell (ti-bell), not
                 the "ringing" bell desktop keeps for its own header. */}
             <RivalIcon name={narrow ? 'notificationsOutline' : 'notificationsActive'} size={narrow ? 21 : 22} color={RivalColors.accentText} />
+            {inboxCount > 0 ? (
+              <View style={styles.notifDot}>
+                <Text style={styles.notifDotText}>{inboxCount > 9 ? '9+' : inboxCount}</Text>
+              </View>
+            ) : null}
           </TouchableOpacity>
           <View
             style={styles.avatarWrap}
@@ -561,6 +582,14 @@ const styles = StyleSheet.create({
   // positioned relative to just the avatar, not the whole nav row. zIndex
   // so the menu paints above the rank badge / page content instead of
   // behind it.
+  // Sits on the bell rather than beside it, so the header's spacing does not
+  // shift the moment something arrives.
+  notifDot: {
+    position: 'absolute', top: -2, right: -4, minWidth: 16, height: 16, borderRadius: 8,
+    paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: RivalColors.accentFill,
+  },
+  notifDotText: { fontSize: 9.5, fontWeight: '800', color: '#2a1410' },
   avatarWrap: { position: 'relative', zIndex: 100 },
   // top/right land the menu exactly at the bar's own bottom-right corner:
   // 53 = ring height (45) + row's bottom padding (8), and -20 cancels
