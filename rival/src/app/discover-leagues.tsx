@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Image, useWindowDimensions, Platform, RefreshControl } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Image, useWindowDimensions, Platform } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -63,15 +64,10 @@ export default function DiscoverLeaguesScreen() {
   const [search, setSearch] = useState('');
   const [joining, setJoining] = useState<string | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => { load(); }, []);
 
-  async function handlePullToRefresh() {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => load());
 
   async function load() {
     const { data: { user } } = await getAuthUser();
@@ -343,8 +339,9 @@ export default function DiscoverLeaguesScreen() {
       <RivalTopNav active="teams" />
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handlePullToRefresh} tintColor={RivalColors.accentText} colors={[RivalColors.accentFill]} />}
+        {...pullProps}
       >
+        {pullIndicator}
 
         {/* Search + entry points */}
         <View style={[styles.toolRow, wide && styles.toolRowWide]}>

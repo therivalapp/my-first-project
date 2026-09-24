@@ -157,7 +157,7 @@ serve(async (req) => {
         upload_id: activity.upload_id ?? null,
       }
 
-      const canonicalId = await resolveCanonicalActivityId(supabase, {
+      const resolved = await resolveCanonicalActivityId(supabase, {
         userId: user.id,
         provider: 'strava',
         providerActivityId,
@@ -167,6 +167,12 @@ serve(async (req) => {
         distanceMeters: activity.distance,
         rawPayload: sourceProvenance,
       })
+
+      // Overlaps an activity already recorded and saw less of the session —
+      // writing it would double-count one workout. The source is already
+      // linked, so this won't be reconsidered on the next sync.
+      if (resolved.discard) return null
+      const canonicalId = resolved.canonicalId
 
       const fields: Record<string, unknown> = {
         activity_type: canonicalType,
@@ -224,7 +230,16 @@ serve(async (req) => {
       }
     }
 
-    const hasMore = activities.length === PAGE_SIZE && page < MAX_PAGE
+    // Keep going until a page comes back genuinely empty, rather than until
+    // one comes back short. Strava does not guarantee a full page: activities
+    // hidden from the feed, deleted, or belonging to another athlete on a
+    // shared upload are filtered out server-side AFTER the page is cut, so a
+    // partial page in the middle of a history is normal. Treating that as the
+    // end silently truncated imports at whatever date the first short page
+    // happened to land on, which is why some accounts imported only a few
+    // months and no error was ever shown — the import believed it had
+    // finished. Costs one extra request that returns nothing.
+    const hasMore = activities.length > 0 && page < MAX_PAGE
 
     // Milestone/push-notification pass only runs once the caller has reached
     // the last page — cheap either way, but no reason to spam a push per page.

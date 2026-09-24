@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Image, Platform } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -42,6 +43,8 @@ export default function StatsScreen() {
   useEffect(() => {
     loadStats();
   }, []);
+
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadStats());
 
   async function loadStats() {
     const { data: { user } } = await getAuthUser();
@@ -156,7 +159,8 @@ export default function StatsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={styles.content} {...pullProps}>
+        {pullIndicator}
 
         <View style={styles.header}>
           <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />

@@ -7,7 +7,7 @@ RIVAL is a social fitness app: friends form **Teams**, log workouts (manual entr
 ## Layout
 
 - `src/app/*.tsx` — one file per screen, Expo Router file-based routes. `league.tsx` is the Team hub (feed/chat/sessions/challenges/standings).
-- `src/lib/` — shared logic: `xp.ts` (level math), `streak.ts`, `season.ts`, `identity.ts` (display-name styles), `dateFormat.ts` (DD/MM/YYYY ↔ ISO), `achievements.ts`, `supabase.ts` (client).
+- `src/lib/` — shared logic: `xp.ts` (level math), `streak.ts`, `season.ts`, `identity.ts` (display-name styles), `dateFormat.ts` (YYYY-MM-DD typed input ↔ ISO), `achievements.ts`, `supabase.ts` (client).
 - `supabase/functions/` — Deno edge functions. `_shared/` holds cross-function modules (`activityDedup.ts`, `formatName.ts`).
 - `supabase/*.sql` — schema/RLS migrations as standalone files. **Always write the .sql file first and show Ricky what it does** — it's the reviewable artifact. He may then either run it himself in the dashboard, or tell you to apply it (see "Applying migrations" below). Either way, verify it landed afterwards.
 
@@ -39,9 +39,10 @@ RIVAL is a social fitness app: friends form **Teams**, log workouts (manual entr
 ## Client-code footguns
 
 - **Always check `.error` (and `count` on deletes) from every Supabase write** before treating it as done or navigating away. RLS failures are silent no-ops (0 rows, no error thrown) — this has caused real shipped bugs (leave-team, kick-member).
+- **`RefreshControl` does nothing at all on web** — react-native-web renders it as a plain View and drops `onRefresh`, so pull-to-refresh never fires. Use `usePullToRefresh` from `src/components/rival/usePullToRefresh.tsx`, which implements the gesture against the scrolling element.
 - **`Alert.alert` does nothing at all on web** — react-native-web ships it as an empty function (`static alert() {}`), so EVERY call is silently discarded, not just ones with buttons. Never call it directly. Use `notify()` from `src/lib/notify.ts` (web → `window.alert`, native → the real Alert) for messages, `window.confirm` for confirmations, and inline error text (state + styled Text) where the error belongs next to the control. This has bitten silently before: four error paths in league-settings (approve/decline//remove member/change role) reported failures into the void.
 - **PostgREST embedded-resource filters** (`.select('x, parent!inner(y)').eq('parent.y', …)`) can silently fail to filter. Use two plain sequential queries instead.
-- Dates display as **DD/MM/YYYY** everywhere; convert with `src/lib/dateFormat.ts` helpers at input boundaries, store ISO `YYYY-MM-DD`. Ricky is in NZ (UTC+12/13) — be careful parsing date-only strings with `new Date()`.
+- Dates are **typed** as `YYYY-MM-DD` (Canada's standard, and unambiguous where DD/MM and MM/DD disagree); convert with `src/lib/dateFormat.ts` helpers at input boundaries, store ISO `YYYY-MM-DD`. Dates are **displayed** with `toLocaleDateString(undefined, …)` so each user sees their own device's format — never hardcode a locale. Ricky is in Canada; the test suite still pins `TZ=Pacific/Auckland` for the NZ DST streak regressions.
 - Week boundaries are **Monday-start** (`streak.ts` has the canonical helper).
 
 ## Product vocabulary (copy-only renames — internals unchanged)

@@ -5,15 +5,15 @@ import { displayToIsoDate, isoToDisplayDate, maskDateInput } from '../../lib/dat
 import { RivalIcon } from './RivalIcon';
 import { RivalCalendarGrid } from './RivalCalendarGrid';
 
-// A typed DD/MM/YYYY field paired with a calendar button — typing still
-// works (auto-slashed via maskDateInput so a missing "/" can't happen), but
+// A typed YYYY-MM-DD field paired with a calendar button — typing still
+// works (separators inserted via maskDateInput so a missing "-" can't happen), but
 // tapping the calendar icon skips typing entirely. `inputStyle` takes each
 // screen's own existing input styling so this drops into a differently-
 // styled form without homogenizing the whole app's look.
 export function RivalDateField({
   value,
   onChangeText,
-  placeholder = 'DD/MM/YYYY',
+  placeholder = 'YYYY-MM-DD',
   inputStyle,
   containerStyle,
 }: {

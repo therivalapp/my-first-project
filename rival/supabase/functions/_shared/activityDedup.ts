@@ -46,11 +46,16 @@ const DISTANCE_TOLERANCE_FRAC = 0.10
 // for THIS user. Returns the canonical activity id to update, or null if this is
 // genuinely new for this user — callers should INSERT a new activities row and then
 // call linkNewActivitySource().
+// `discard: true` means this activity should not be written at all — it
+// overlaps one already recorded and saw less of the session. Callers must skip
+// it rather than falling back to an insert.
+export type ResolveResult = { canonicalId: string | null; discard: boolean }
+
 export async function resolveCanonicalActivityId(
   // deno-lint-ignore no-explicit-any
   supabase: any,
   candidate: ActivityCandidate,
-): Promise<string | null> {
+): Promise<ResolveResult> {
   // Fast path: this exact (user, provider, provider_activity_id) has been seen
   // before — no fuzzy matching needed, just report back which activity it belongs to.
   const { data: existingSource } = await supabase
@@ -66,7 +71,7 @@ export async function resolveCanonicalActivityId(
     if (candidate.rawPayload) {
       await linkNewActivitySource(supabase, candidate.userId, existingSource.activity_id, candidate.provider, candidate.providerActivityId, candidate.rawPayload)
     }
-    return existingSource.activity_id
+    return { canonicalId: existingSource.activity_id, discard: false }
   }
 
   // Slow path: has some OTHER source already recorded the same physical workout
@@ -97,6 +102,55 @@ export async function resolveCanonicalActivityId(
     return true
   })
 
+  // No fuzzy match — but a person cannot be doing two activities of the same
+  // kind at the same time. A watch that restarts mid-session, or a phone
+  // recording alongside the watch, produces genuinely different Strava
+  // activities: different ids, starts tens of minutes apart, different
+  // distances. The matcher above correctly says they are not the same
+  // recording, and they still can't both have happened. Left unguarded, one
+  // 40-minute run arrived as five overlapping runs worth 2.5x the Effort
+  // actually earned, which distorts the leaderboard rather than merely
+  // cluttering the feed.
+  //
+  // Resolved in favour of the LONGEST recording — the one that saw most of the
+  // session. This function does not rewrite the row itself: callers overwrite
+  // the canonical row with the incoming activity's freshly scored fields, so
+  // returning the clash id is already how a longer recording wins. A shorter
+  // one has to be refused outright, which is what `discard` is for.
+  if (!match && candidate.durationSeconds) {
+    const candStart = startedAtMs
+    const candEnd = candStart + candidate.durationSeconds * 1000
+    // Wider than the fuzzy window: an overlapping recording can start well
+    // outside ±10 min and still overlap, so look back by the longest plausible
+    // session instead.
+    const lookback = new Date(candStart - 6 * 60 * 60 * 1000).toISOString()
+    const lookahead = new Date(candEnd + 6 * 60 * 60 * 1000).toISOString()
+    const { data: nearbyDay } = await supabase
+      .from('activities')
+      .select('id, activity_type, duration_seconds, started_at')
+      .eq('user_id', candidate.userId)
+      .gte('started_at', lookback)
+      .lte('started_at', lookahead)
+
+    // deno-lint-ignore no-explicit-any
+    const clash = (nearbyDay ?? []).find((a: any) => {
+      if (activityCategory(a.activity_type) !== category) return false
+      if (!a.duration_seconds) return false
+      const aStart = new Date(a.started_at).getTime()
+      const aEnd = aStart + a.duration_seconds * 1000
+      return candStart < aEnd && aStart < candEnd
+    })
+
+    if (clash) {
+      // Either way the source is recorded, so a re-sync takes the fast path
+      // instead of re-deciding this every time.
+      await linkNewActivitySource(supabase, candidate.userId, clash.id, candidate.provider, candidate.providerActivityId, candidate.rawPayload)
+      return candidate.durationSeconds > (clash.duration_seconds as number)
+        ? { canonicalId: clash.id, discard: false }
+        : { canonicalId: null, discard: true }
+    }
+  }
+
   if (match) {
     // Link this source to the existing activity so future syncs from it take the fast path.
     await linkNewActivitySource(supabase, candidate.userId, match.id, candidate.provider, candidate.providerActivityId, candidate.rawPayload)
@@ -112,10 +166,10 @@ export async function resolveCanonicalActivityId(
       await supabase.from('activities').update(backfill).eq('id', match.id)
     }
 
-    return match.id
+    return { canonicalId: match.id, discard: false }
   }
 
-  return null
+  return { canonicalId: null, discard: false }
 }
 
 // Records which source an activity came from. Call once right after inserting a

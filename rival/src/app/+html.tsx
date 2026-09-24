@@ -24,7 +24,10 @@ export default function Root({ children }: { children: React.ReactNode }) {
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="RIVAL" />
-        <link rel="apple-touch-icon" href="/assets/images/icon.png" />
+        {/* expo export copies app.json's icon to the root of dist, not to the
+            path it has in the source tree — pointing at the source path gave
+            iOS a 404 and a screenshot of the page as the home-screen icon. */}
+        <link rel="apple-touch-icon" href="/icon.png" />
 
         {/* Android/Chrome install prompt + standalone display */}
         <meta name="theme-color" content="#0e0e0e" />
