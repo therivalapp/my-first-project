@@ -1,7 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, ImageBackground, useWindowDimensions } from 'react-native';
 import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
-import { ShortActivityReview } from '@/components/rival/ShortActivityReview';
 import Svg, { Defs, LinearGradient, Polygon, Stop } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
@@ -1705,9 +1704,6 @@ export default function HomeScreen() {
           )}
 
         </ScrollView>
-      {/* Asks about accidentally-short synced activities. Renders nothing
-          unless this user has one waiting, so it costs a single query. */}
-      <ShortActivityReview />
     </SafeAreaView>
     </View>
   );
