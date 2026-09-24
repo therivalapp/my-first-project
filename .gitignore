@@ -31,3 +31,8 @@ dist-before/
 
 # Session scratchpad — DB snapshots taken before migrations, local only.
 scratchpad/
+
+# Supabase CLI scratch: link state and version caches, rewritten by every
+# CLI command and specific to one machine.
+supabase/.temp/
+rival/supabase/.temp/
