@@ -1,5 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Platform, ScrollView, Image, ImageBackground, TouchableOpacity, RefreshControl, TextInput } from 'react-native';
+import { View, Text, StyleSheet, Platform, ScrollView, Image, ImageBackground, TouchableOpacity, TextInput } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
+import { buildDayRollups, mergeRollups, rollsUpIntoDayCard, type DayRollup, type RollupRow } from '@/lib/dayRollup';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useWindowDimensions } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
@@ -43,6 +45,18 @@ function tintFor(name: string): { bg: string; color: string } {
   let hash = 0;
   for (const c of name) hash = c.charCodeAt(0) + ((hash << 5) - hash);
   return TINTS[Math.abs(hash) % TINTS.length];
+}
+
+// 'dayRoll' is the UI's name for the kind; 'day_roll' is what the reaction and
+// comment tables accept. Convert here so neither side has to know the other's
+// spelling.
+//
+// A rollup's id is a synthetic "roll:<user>:<date>" spanning several
+// activities rather than pointing at one row, which is why target_id is text
+// rather than uuid on both tables — see
+// supabase/reactions_target_id_to_text.sql.
+function reactionTargetType(kind: FeedPost['kind']): 'activity' | 'race' | 'day_roll' {
+  return kind === 'dayRoll' ? 'day_roll' : kind;
 }
 
 function feedTargetKey(type: string, id: string) {
@@ -123,6 +137,25 @@ type FeedPost =
       teamNames: string[];
     }
   | {
+      // One card per person per day gathering their auto-synced walks,
+      // instead of a feed row each. Nothing is hidden — every walk still earns
+      // its Effort and still appears here — it just shares a card with the
+      // rest of that day's walks rather than pushing everyone else's training
+      // down the feed.
+      kind: 'dayRoll';
+      rollup: DayRollup;
+      id: string;
+      userId: string;
+      name: string;
+      count: number;
+      totalSeconds: number;
+      xp: number;
+      typeLabel: string;
+      ts: string;
+      teamIds: string[];
+      teamNames: string[];
+    }
+  | {
       kind: 'race';
       id: string;
       userId: string;
@@ -142,6 +175,15 @@ type FeedPost =
 // was reachable at all. Replaced with cursor pagination: no time window, and
 // scrolling loads the next page from where the last one ended.
 const PAGE_SIZE = 20;
+
+// A session this short is usually an accident: a watch that lost GPS and was
+// restarted, a recording stopped seconds after it began, a stray tap. It is
+// only ever an OFFER, shown to the activity's owner alone — short is
+// suspicious, not impossible, and plenty of real sessions are brief (a sprint,
+// a test, a warm-up someone wants on the record). Overlapping activities are
+// resolved automatically in the importer instead, because two activities at
+// the same time genuinely cannot both have happened.
+const LIKELY_MISTAKE_UNDER_SECONDS = 3 * 60;
 
 // Everything a feed row needs that is NOT the row itself — resolved once per
 // refresh and reused by every subsequent page, so paging doesn't re-query the
@@ -163,6 +205,40 @@ function findPbLift(ctx: FeedContext, userId: string, exercises: any[] | null): 
     if (ex.weight >= (ctx.liftMaxMap.get(`${userId}|${canonical}`) ?? 0)) return canonical;
   }
   return null;
+}
+
+// Rollup grouping, merging and the walk/auto-sync rule live in
+// src/lib/dayRollup.ts so they can be tested — the merge in particular has a
+// failure mode (folding the same page in twice must not double a count) that
+// cannot be checked by eye once it is tangled up with React state. This wraps
+// the plain rollups in the display fields a feed card needs.
+function postsForPage(ctx: FeedContext, rows: any[]): FeedPost[] {
+  const own: FeedPost[] = [];
+  const toRoll: RollupRow[] = [];
+  for (const a of rows) {
+    if (!ctx.teamsForUser[a.user_id]?.length) continue;
+    if (rollsUpIntoDayCard(a)) toRoll.push(a as RollupRow);
+    else { const p = activityRowToPost(ctx, a); if (p) own.push(p); }
+  }
+  return [...own, ...buildDayRollups(toRoll).map((r) => rollupToPost(ctx, r))];
+}
+
+function rollupToPost(ctx: FeedContext, r: DayRollup): FeedPost {
+  const posterTeams = ctx.teamsForUser[r.userId] ?? [];
+  return {
+    kind: 'dayRoll',
+    rollup: r,
+    id: r.id,
+    userId: r.userId,
+    name: ctx.nameMap[r.userId] ?? 'Athlete',
+    count: r.count,
+    totalSeconds: r.totalSeconds,
+    xp: r.xp,
+    typeLabel: r.typeLabel,
+    ts: r.ts,
+    teamIds: posterTeams,
+    teamNames: posterTeams.map((tid) => ctx.teamNameById[tid] ?? ''),
+  };
 }
 
 function activityRowToPost(ctx: FeedContext, a: any): FeedPost | null {
@@ -213,7 +289,7 @@ const byNewestFirst = (a: FeedPost, b: FeedPost) => new Date(b.ts).getTime() - n
 // mid-scroll (an offset would shift and duplicate rows; a cursor won't).
 async function fetchActivityPage(ctx: FeedContext, cursor: string | null) {
   let q = supabase.from('activities')
-    .select('id, user_id, name, activity_type, started_at, duration_seconds, distance_meters, effort_score, exercises, notes, photo_url')
+    .select('id, user_id, name, activity_type, provider, started_at, duration_seconds, distance_meters, effort_score, exercises, notes, photo_url')
     .in('user_id', ctx.memberIds)
     .order('started_at', { ascending: false })
     .limit(PAGE_SIZE + 1);
@@ -228,7 +304,8 @@ async function fetchActivityPage(ctx: FeedContext, cursor: string | null) {
 export default function TeamFeedScreen() {
   const { width } = useWindowDimensions();
   const mobile = width < BREAKPOINT_WIDE_LAYOUT;
-  const [refreshing, setRefreshing] = useState(false);
+
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadFeed());
   const [loading, setLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState('');
   const [teams, setTeams] = useState<Team[]>([]);
@@ -375,7 +452,7 @@ export default function TeamFeedScreen() {
     setHasMore(more);
 
     const built: FeedPost[] = [];
-    page.forEach((a: any) => { const p = activityRowToPost(ctx, a); if (p) built.push(p); });
+    built.push(...postsForPage(ctx, page));
     (racesRes.data || []).forEach((r: any) => { const p = raceRowToPost(ctx, r); if (p) built.push(p); });
     built.sort(byNewestFirst);
     setItems(built);
@@ -395,11 +472,22 @@ export default function TeamFeedScreen() {
     cursorRef.current = nextCursor;
     setHasMore(more);
 
-    const newPosts: FeedPost[] = [];
-    page.forEach((a: any) => { const p = activityRowToPost(ctx, a); if (p) newPosts.push(p); });
+    const newPosts: FeedPost[] = postsForPage(ctx, page);
     setItems((prev) => {
-      const seen = new Set(prev.map((p) => `${p.kind}-${p.id}`));
-      const merged = [...prev, ...newPosts.filter((p) => !seen.has(`${p.kind}-${p.id}`))];
+      // A day's short activities can straddle a page boundary, so a rollup
+      // already on screen has to absorb the later page's rows rather than
+      // appear twice. Totals add; `ts` keeps the earliest so the card doesn't
+      // move once placed.
+      const byId = new Map(prev.map((p) => [`${p.kind}-${p.id}`, p]));
+      for (const p of newPosts) {
+        const key = `${p.kind}-${p.id}`;
+        const existing = byId.get(key);
+        if (!existing) { byId.set(key, p); continue; }
+        if (existing.kind === 'dayRoll' && p.kind === 'dayRoll') {
+          byId.set(key, rollupToPost(ctx, mergeRollups(existing.rollup, p.rollup)));
+        }
+      }
+      const merged = [...byId.values()];
       merged.sort(byNewestFirst);
       return merged;
     });
@@ -409,7 +497,7 @@ export default function TeamFeedScreen() {
 
   useFocusEffect(useCallback(() => { loadFeed(); }, [loadFeed]));
 
-  async function toggleReaction(targetType: 'activity' | 'race', targetId: string, teamId: string, emoji: 'respect' | 'inspired') {
+  async function toggleReaction(targetType: 'activity' | 'race' | 'day_roll', targetId: string, teamId: string, emoji: 'respect' | 'inspired') {
     if (!currentUserId) return;
     const key = feedTargetKey(targetType, targetId);
     const existing = (reactionsMap[key] || []).find((r) => r.user_id === currentUserId);
@@ -440,7 +528,7 @@ export default function TeamFeedScreen() {
     });
   }
 
-  async function postComment(targetType: 'activity' | 'race', targetId: string, teamId: string) {
+  async function postComment(targetType: 'activity' | 'race' | 'day_roll', targetId: string, teamId: string) {
     if (!currentUserId) return;
     const key = feedTargetKey(targetType, targetId);
     const text = (commentDrafts[key] || '').trim();
@@ -486,8 +574,9 @@ export default function TeamFeedScreen() {
             const fromEnd = contentSize.height - (contentOffset.y + layoutMeasurement.height);
             if (fromEnd < 600) loadMore();
           }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await loadFeed(); setRefreshing(false); }} tintColor={RivalColors.accentText} colors={[RivalColors.accentFill]} />}
+          {...pullProps}
         >
+          {pullIndicator}
           <HeroPhoto style={styles.hero}>
             <View style={styles.heroTextBlock}>
               <View style={styles.heroGlyphRow}>
@@ -556,15 +645,15 @@ export default function TeamFeedScreen() {
                   post={post}
                   currentUserId={currentUserId}
                   avatarUrl={avatarMap[post.userId] ?? null}
-                  reactions={reactionsMap[feedTargetKey(post.kind, post.id)] || []}
-                  comments={commentsMap[feedTargetKey(post.kind, post.id)] || []}
+                  reactions={reactionsMap[feedTargetKey(reactionTargetType(post.kind), post.id)] || []}
+                  comments={commentsMap[feedTargetKey(reactionTargetType(post.kind), post.id)] || []}
                   nameMap={nameMap}
-                  onReact={(emoji) => toggleReaction(post.kind, post.id, post.teamIds[0], emoji)}
-                  isCommentsOpen={expandedComments.has(feedTargetKey(post.kind, post.id))}
-                  onToggleComments={() => toggleComments(feedTargetKey(post.kind, post.id))}
-                  commentDraft={commentDrafts[feedTargetKey(post.kind, post.id)] || ''}
-                  onChangeCommentDraft={(v) => setCommentDrafts((prev) => ({ ...prev, [feedTargetKey(post.kind, post.id)]: v }))}
-                  onPostComment={() => postComment(post.kind, post.id, post.teamIds[0])}
+                  onReact={(emoji) => toggleReaction(reactionTargetType(post.kind), post.id, post.teamIds[0], emoji)}
+                  isCommentsOpen={expandedComments.has(feedTargetKey(reactionTargetType(post.kind), post.id))}
+                  onToggleComments={() => toggleComments(feedTargetKey(reactionTargetType(post.kind), post.id))}
+                  commentDraft={commentDrafts[feedTargetKey(reactionTargetType(post.kind), post.id)] || ''}
+                  onChangeCommentDraft={(v) => setCommentDrafts((prev) => ({ ...prev, [feedTargetKey(reactionTargetType(post.kind), post.id)]: v }))}
+                  onPostComment={() => postComment(reactionTargetType(post.kind), post.id, post.teamIds[0])}
                   onDeleted={() => setItems((prev) => prev.filter((it) => it.id !== post.id))}
                   onPhotoAdded={(id, url) => setItems((prev) => prev.map((it) => (it.id === id ? { ...it, photoUrl: url } : it)))}
                 />
@@ -672,7 +761,9 @@ function PostCard({
 
   const statsLine = post.kind === 'activity'
     ? [post.distanceMeters > 100 ? `${(post.distanceMeters / 1000).toFixed(1)} km` : null, formatDuration(post.durationSeconds)].filter(Boolean).join(' · ')
-    : '';
+    : post.kind === 'dayRoll'
+      ? formatDuration(post.totalSeconds)
+      : '';
 
   return (
     <View style={styles.post}>
@@ -696,7 +787,11 @@ function PostCard({
         <TouchableOpacity style={{ flex: 1, minWidth: 0 }} activeOpacity={0.7} onPress={() => router.push(`/stats?userId=${post.userId}` as any)}>
           <Text style={styles.postName}>{displayedName}</Text>
           <Text style={styles.postMeta}>
-            {post.kind === 'race' ? 'Signed up for a race' : (post.activityName || post.activityType)} · {timeAgo(post.ts)}
+            {post.kind === 'race'
+              ? 'Signed up for a race'
+              : post.kind === 'dayRoll'
+                ? `${post.count} ${post.typeLabel}`
+                : (post.activityName || post.activityType)} · {timeAgo(post.ts)}
             {post.userId !== currentUserId ? (
               <> · <Text style={styles.postTeamTag}>{primaryTeamName}{extraTeamCount > 0 ? ` +${extraTeamCount}` : ''}</Text></>
             ) : null}
@@ -738,7 +833,13 @@ function PostCard({
         )}
       </View>
 
-      {post.kind === 'race' ? (
+      {post.kind === 'dayRoll' ? (
+        <View style={styles.noPhotoPanel}>
+          <RivalIcon name="walk" size={28} color={RivalColors.accentText} />
+          <Text style={styles.rollupCount}>{post.count} {post.typeLabel}</Text>
+          <Text style={styles.noPhotoBody}>{formatDuration(post.totalSeconds)} of movement</Text>
+        </View>
+      ) : post.kind === 'race' ? (
         <View style={styles.noPhotoPanel}>
           <RivalIcon name="flag" size={28} color="#ff5c5c" />
           <Text style={styles.eventAction}>Signed up for a race</Text>
@@ -759,11 +860,11 @@ function PostCard({
       ) : (
         <View style={styles.noPhotoPanel}>
           <RivalIcon name={activityIconName(post.activityType)} size={28} color={RivalColors.accentText} />
-          <Text style={styles.noPhotoBody}>Logged a session — no photo this time, still counts.</Text>
+          <Text style={styles.noPhotoBody}>No photo this time, still counts.</Text>
         </View>
       )}
 
-      {post.kind === 'activity' && (
+      {(post.kind === 'activity' || post.kind === 'dayRoll') && (
         <>
           <View style={styles.postFooterRow}>
             {badge ? (
@@ -782,6 +883,16 @@ function PostCard({
             )}
           </View>
           {badge && statsLine ? <Text style={styles.statsLine}>{statsLine}</Text> : null}
+          {post.kind === 'activity'
+            && post.userId === currentUserId
+            && post.durationSeconds > 0
+            && post.durationSeconds < LIKELY_MISTAKE_UNDER_SECONDS ? (
+            <TouchableOpacity onPress={deleteThisActivity} disabled={deleting} activeOpacity={0.7}>
+              <Text style={styles.tooShortOffer}>
+                {deleting ? 'Removing…' : 'Too short to count? Remove it'}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </>
       )}
 
@@ -956,6 +1067,12 @@ const styles = StyleSheet.create({
   noPhotoBody: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 13, color: 'rgba(255,255,255,0.75)', textAlign: 'center' },
   addPhotoPanel: { borderWidth: 1.5, borderColor: 'rgba(255,209,190,0.35)', borderStyle: 'dashed' as any },
   addPhotoCircle: { width: 44, height: 44, borderRadius: 22, borderWidth: 1.5, borderColor: RivalColors.accentText, alignItems: 'center', justifyContent: 'center' },
+  // Same weight as the event label but in the app's own accent rather than
+  // race red — a day of walks is ordinary training, not an occasion.
+  rollupCount: { fontSize: 11.5, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase', color: RivalColors.accentText },
+  // Offered, never insisted on: the same muted weight as the stats line rather
+  // than anything that reads as a warning, and only the owner ever sees it.
+  tooShortOffer: { marginTop: 8, fontSize: 12, color: RivalColors.textSecondary, textDecorationLine: 'underline' },
   eventAction: { fontSize: 11.5, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase', color: '#ff5c5c' },
   eventName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 18, color: '#fff', marginTop: 2 },
   eventDate: { fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 2 },
