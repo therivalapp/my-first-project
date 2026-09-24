@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Animated, StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, useWindowDimensions, RefreshControl } from 'react-native';
+import { Animated, StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, useWindowDimensions } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -93,17 +94,12 @@ export default function ProfileScreen() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     loadProfile();
   }, []);
 
-  async function handlePullToRefresh() {
-    setRefreshing(true);
-    await loadProfile();
-    setRefreshing(false);
-  }
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadProfile());
 
   async function loadProfile() {
     const { data: { user } } = await getAuthUser();
@@ -678,8 +674,9 @@ export default function ProfileScreen() {
       <RivalTopNav />
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handlePullToRefresh} tintColor={RivalColors.accentText} colors={[RivalColors.accentFill]} />}
+        {...pullProps}
       >
+        {pullIndicator}
         <View style={styles.header}>
           {/* Inside a panel, back means "back to the menu" — leaving the page
               entirely would skip a level the user can see they're inside. */}

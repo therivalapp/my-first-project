@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, ImageBackground, useWindowDimensions, RefreshControl } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, ImageBackground, useWindowDimensions } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
+import { ShortActivityReview } from '@/components/rival/ShortActivityReview';
 import Svg, { Defs, LinearGradient, Polygon, Stop } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
@@ -194,7 +196,8 @@ function daysUntil(dateStr: string): number {
 }
 
 // "Sun 25 Oct" — mobile Next Event card's date format (no existing formatter
-// in dateFormat.ts covers this shape, that file is DD/MM/YYYY <-> ISO only).
+// in dateFormat.ts covers this shape; that file handles typed date input, not
+// display).
 function formatRaceDateShort(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number);
   const date = new Date(y, m - 1, d);
@@ -523,17 +526,12 @@ export default function HomeScreen() {
   const [statsCardHovered, setStatsCardHovered] = useState(false);
   const [addActivityHovered, setAddActivityHovered] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
 
   useFocusEffect(useCallback(() => {
     loadAll();
   }, []));
 
-  async function handlePullToRefresh() {
-    setRefreshing(true);
-    await loadAll();
-    setRefreshing(false);
-  }
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadAll());
 
   async function loadAll() {
     const { data: { user } } = await getAuthUser();
@@ -857,8 +855,9 @@ export default function HomeScreen() {
           // that div's scroll. This is the standard compositing fix for
           // that exact case.
           style={Platform.OS === 'web' ? ({ WebkitOverflowScrolling: 'touch' } as any) : undefined}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handlePullToRefresh} tintColor={RivalColors.accentText} colors={[RivalColors.accentFill]} />}
+          {...pullProps}
         >
+          {pullIndicator}
 
           {mobile ? (
             <>
@@ -1706,7 +1705,10 @@ export default function HomeScreen() {
           )}
 
         </ScrollView>
-      </SafeAreaView>
+      {/* Asks about accidentally-short synced activities. Renders nothing
+          unless this user has one waiting, so it costs a single query. */}
+      <ShortActivityReview />
+    </SafeAreaView>
     </View>
   );
 }
@@ -2027,8 +2029,17 @@ const styles = StyleSheet.create({
   // requires sizing the box itself, not an objectPosition crop-anchor (which
   // has nothing to shift when nothing is being cropped vertically).
   mPodiumSmoke: {
-    position: 'absolute', width: '100%', height: 353,
-    marginLeft: -16, marginRight: -16, marginTop: -26,
+    // Taller than the card and pulled well above it, because the photo's own
+    // top third is nearly black (sampled: brightness ~30/255 down to 30% in,
+    // ~103 by the midpoint). At 0.28 opacity that dead zone is
+    // indistinguishable from the card behind it, so the smoke appeared to
+    // start a third of the way down and the space above it read as a black
+    // band under the top nav. Pulling the dark third up behind the nav puts
+    // the actual smoke at the seam. resizeMode can't do this instead — RN-web
+    // renders this image with object-fit:fill, so the whole photo is always
+    // shown and there is no crop to reposition.
+    position: 'absolute', width: '100%', height: 480,
+    marginLeft: -16, marginRight: -16, marginTop: -150,
     opacity: 0.28,
     // The box's own bottom edge was a hard cutoff against the card's dark
     // bg — a mask-image fade (not just lowering opacity further, which

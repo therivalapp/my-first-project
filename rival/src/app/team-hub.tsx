@@ -20,6 +20,7 @@ import { useEffect, useState } from 'react';
 import { Asset } from 'expo-asset';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Image, ImageBackground, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -395,6 +396,8 @@ export default function TeamHub() {
     if (error) { notify("Couldn't leave the team", error.message); return; }
     router.replace('/team-feed');
   }
+
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => load());
 
   async function load() {
     setLoading(true);
@@ -828,7 +831,8 @@ export default function TeamHub() {
             with its own back and settings buttons. You arrive here from the
             Teams tab, so Teams stays lit and the tabs stay one tap away. */}
         <RivalTopNav active="teams" hideBar />
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} {...pullProps}>
+          {pullIndicator}
           <HeroPhoto style={[styles.hero, activeTab === 'Posts' && styles.heroFit]}>
             <View style={[styles.heroScrim, heroScrimWeb]} />
 
@@ -870,7 +874,7 @@ export default function TeamHub() {
                 <View style={styles.heroTextBlock}>
                   <Text style={styles.eyebrow}>Team Challenge</Text>
                   <Text style={styles.heroTitle}>{GOAL_METRIC_LABEL[league.goal_metric!]}</Text>
-                  <Text style={styles.heroSub}>Since {new Date(league.created_at).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })} · Due {new Date(league.goal_target_date!).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}</Text>
+                  <Text style={styles.heroSub}>Since {new Date(league.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · Due {new Date(league.goal_target_date!).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</Text>
                 </View>
                 {/* For admins the ring itself opens the challenge for editing —
                     no separate button. Everyone else sees it as display only. */}
@@ -1605,7 +1609,7 @@ function ActivityPostCard({
       ) : (
         <View style={styles.noPhotoPanel}>
           <RivalIcon name={activityIconName(a.activity_type)} size={28} color={RivalColors.accentText} />
-          <Text style={styles.noPhotoBody}>Logged a session — no photo this time, still counts.</Text>
+          <Text style={styles.noPhotoBody}>No photo this time, still counts.</Text>
         </View>
       )}
 

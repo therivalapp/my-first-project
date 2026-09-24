@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -72,6 +73,8 @@ export default function TeamSessionsScreen() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => load());
+
 
   const nameFor = useCallback((userId: string) => {
     const m = members.find(mm => mm.user_id === userId);
@@ -135,7 +138,8 @@ export default function TeamSessionsScreen() {
         {loading ? (
           <View style={styles.center}><ActivityIndicator color={RivalColors.accentFill} /></View>
         ) : (
-          <ScrollView contentContainerStyle={styles.list}>
+          <ScrollView contentContainerStyle={styles.list} {...pullProps}>
+            {pullIndicator}
             {shown.length === 0 ? (
               <Text style={styles.empty}>
                 {view === 'upcoming' ? 'No upcoming activities.' : 'No past activities yet.'}

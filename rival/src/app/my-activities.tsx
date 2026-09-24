@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, ImageBackground, useWindowDimensions, RefreshControl } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, ImageBackground, useWindowDimensions } from 'react-native';
+import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -7,6 +8,7 @@ import { notify } from '../lib/notify';
 import { formatDuration, formatDurationClock } from '../lib/format';
 import { calculateStreak } from '../lib/streak';
 import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
+import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { computeActivityInsight, InsightTone } from '../lib/activityInsights';
 import { loadScoringConfig, DEFAULT_MULTIPLIER, ScoringConfig } from '../lib/effort';
 import { RivalTopNav, RivalIcon, activityIconName, RivalFixedBackground, ActivityDiaryViewer, DiaryActivity, PhotoPositioner, CoverImage } from '../components/rival';
@@ -276,7 +278,6 @@ export default function MyActivitiesScreen() {
   const [thisWeekTotal, setThisWeekTotal] = useState(0);
   const [pbs, setPbs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [userId, setUserId] = useState('');
   const [uploading, setUploading] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -300,7 +301,7 @@ export default function MyActivitiesScreen() {
   const [prOnly, setPrOnly] = useState(false);
   const [showTypeFilter, setShowTypeFilter] = useState(false);
   // Mobile Activity Journal's "search by date" — ISO YYYY-MM-DD, matched
-  // against started_at's date portion. Entered via a plain prompt (DD/MM/YYYY,
+  // against started_at's date portion. Entered via a plain prompt (YYYY-MM-DD,
   // this app's display format) rather than a full calendar picker.
   const [dateFilter, setDateFilter] = useState<string | null>(null);
 
@@ -381,13 +382,15 @@ export default function MyActivitiesScreen() {
     if (!user) { setLoading(false); return; }
     setUserId(user.id);
 
-    const { data } = await supabase
-      .from('activities')
-      .select('id, name, activity_type, started_at, duration_seconds, distance_meters, elevation_meters, effort_score, photo_url, photo_focal_x, photo_focal_y, exercises, race_id, notes, location, companions, pinned')
-      .eq('user_id', user.id)
-      .order('started_at', { ascending: false })
-      .limit(100);
-
+    // The whole history, not a slice. This page groups activities into weekly,
+    // month and year views entirely client-side, so anything not fetched simply
+    // vanishes from the calendar — a flat .limit(100) here silently truncated
+    // the journal at the 100th most recent activity (roughly five months for an
+    // active account) while the older data sat in the table untouched.
+    const data = await fetchAllActivities(
+      user.id,
+      'id, name, activity_type, started_at, duration_seconds, distance_meters, elevation_meters, effort_score, photo_url, photo_focal_x, photo_focal_y, exercises, race_id, notes, location, companions, pinned',
+    );
     if (data) {
       setAllActivities(data);
 
@@ -436,11 +439,7 @@ export default function MyActivitiesScreen() {
     setLoading(false);
   }
 
-  async function handlePullToRefresh() {
-    setRefreshing(true);
-    await loadActivities();
-    setRefreshing(false);
-  }
+  const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadActivities());
 
   const MAX_PHOTOS = 2;
   const MAX_VIDEOS = 1;
@@ -1020,14 +1019,6 @@ export default function MyActivitiesScreen() {
             style={styles.jPager}
             onLayout={(e) => setPagerHeight(e.nativeEvent.layout.height)}
             showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={handlePullToRefresh}
-                tintColor={RivalColors.accentText}
-                colors={[RivalColors.accentFill]}
-              />
-            }
           >
             {loading && (
               <View style={[styles.jWeekPage, pagerHeight ? { height: pagerHeight } : null]}>
@@ -1187,11 +1178,11 @@ export default function MyActivitiesScreen() {
                                   style={[styles.typeFilterChip, !!dateFilter && styles.typeFilterChipActive]}
                                   onPress={() => {
                                     if (Platform.OS !== 'web') return;
-                                    const input = window.prompt('Search by date (DD/MM/YYYY)', dateFilter ? isoToDisplayDate(dateFilter) : '');
+                                    const input = window.prompt('Search by date (YYYY-MM-DD)', dateFilter ? isoToDisplayDate(dateFilter) : '');
                                     if (input === null) return;
                                     if (input.trim() === '') { setDateFilter(null); setShowTypeFilter(false); return; }
                                     const iso = displayToIsoDate(input);
-                                    if (!iso) { window.alert('Enter a valid date as DD/MM/YYYY.'); return; }
+                                    if (!iso) { window.alert('Enter a valid date as YYYY-MM-DD.'); return; }
                                     setDateFilter(iso);
                                     setShowTypeFilter(false);
                                   }}
@@ -1355,15 +1346,9 @@ export default function MyActivitiesScreen() {
           <ScrollView
             contentContainerStyle={styles.jContent}
             showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={handlePullToRefresh}
-                tintColor={RivalColors.accentText}
-                colors={[RivalColors.accentFill]}
-              />
-            }
+            {...pullProps}
           >
+            {pullIndicator}
             {journalTitle}
             <View style={[styles.recapCard, !heroExpanded && styles.recapCardCollapsed]}>
               <TouchableOpacity style={styles.recapTitleRow} activeOpacity={0.7} onPress={() => setHeroExpanded((v) => !v)}>
@@ -1487,11 +1472,11 @@ export default function MyActivitiesScreen() {
                         style={[styles.typeFilterChip, !!dateFilter && styles.typeFilterChipActive]}
                         onPress={() => {
                           if (Platform.OS !== 'web') return;
-                          const input = window.prompt('Search by date (DD/MM/YYYY)', dateFilter ? isoToDisplayDate(dateFilter) : '');
+                          const input = window.prompt('Search by date (YYYY-MM-DD)', dateFilter ? isoToDisplayDate(dateFilter) : '');
                           if (input === null) return;
                           if (input.trim() === '') { setDateFilter(null); setShowTypeFilter(false); return; }
                           const iso = displayToIsoDate(input);
-                          if (!iso) { window.alert('Enter a valid date as DD/MM/YYYY.'); return; }
+                          if (!iso) { window.alert('Enter a valid date as YYYY-MM-DD.'); return; }
                           setDateFilter(iso);
                           setShowTypeFilter(false);
                         }}
