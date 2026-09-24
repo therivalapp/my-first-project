@@ -708,7 +708,7 @@ export default function RacesScreen() {
               </>
             )}
 
-            <Text style={styles.modalLabel}>Race date (DD/MM/YYYY)</Text>
+            <Text style={styles.modalLabel}>Race date (YYYY-MM-DD)</Text>
             <RivalDateField value={raceDate} onChangeText={setRaceDate} placeholder="18/10/2026" inputStyle={styles.modalInput} />
 
             <Text style={styles.modalLabel}>Location (optional)</Text>

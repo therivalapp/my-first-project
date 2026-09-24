@@ -475,7 +475,7 @@ export default function CreateLeagueScreen() {
       }
       goalTargetIso = displayToIsoDate(goalTargetDate);
       if (!goalTargetIso) {
-        setError('Enter a valid target date (DD/MM/YYYY).');
+        setError('Enter a valid target date (YYYY-MM-DD).');
         return;
       }
     }
@@ -1399,7 +1399,7 @@ const styles = StyleSheet.create({
   previewProgressGoalText: { fontSize: 15, fontWeight: '700', color: RivalColors.accentText },
 
   // Week-strip date picker (stitch-export-21's "Calendar Marker") — a pick-a-
-  // day widget under the text field instead of a bare DD/MM/YYYY box.
+  // day widget under the text field instead of a bare YYYY-MM-DD box.
   // Capped width (roughly half the panel) instead of stretching full-width —
   // a 7-column day grid that wide made each cell oversized for what's just a
   // date picker, not the main focus of the form.

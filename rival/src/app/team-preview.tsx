@@ -90,7 +90,7 @@ export default function TeamPreviewScreen() {
 
   function foundedLabel(iso: string) {
     const d = new Date(iso);
-    return d.toLocaleDateString('en-NZ', { month: 'long', year: 'numeric' });
+    return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   }
 
   const body = () => {

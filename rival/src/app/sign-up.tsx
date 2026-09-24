@@ -27,7 +27,7 @@ export default function SignUpScreen() {
 
     const dobIso = displayToIsoDate(dob.trim());
     if (!dobIso) {
-      setError('Enter your date of birth as DD/MM/YYYY');
+      setError('Enter your date of birth as YYYY-MM-DD');
       return;
     }
 
@@ -115,7 +115,7 @@ export default function SignUpScreen() {
               <Text style={styles.label}>Date of Birth</Text>
               <TextInput
                 style={styles.input}
-                placeholder="DD/MM/YYYY"
+                placeholder="YYYY-MM-DD"
                 placeholderTextColor={RivalColors.textSecondary}
                 value={dob}
                 onChangeText={(v) => setDob(maskDateInput(v))}

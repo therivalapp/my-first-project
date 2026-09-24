@@ -893,7 +893,7 @@ export default function LeagueScreen() {
     const target = parseFloat(goalTargetDraft);
     if (!target || target <= 0) { notify('Set a target', 'Enter a positive number.'); return; }
     const iso = displayToIsoDate(goalDateDraft);
-    if (!iso) { notify('Set a target date', 'Use DD/MM/YYYY.'); return; }
+    if (!iso) { notify('Set a target date', 'Use YYYY-MM-DD.'); return; }
     setSavingGoal(true);
     const { error } = await supabase
       .from('leagues')

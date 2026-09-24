@@ -70,7 +70,7 @@ const DOUBLE_TAP_MS = 280;
 const SESSION_GRACE_MS = 12 * 60 * 60 * 1000;
 
 function timeLabel(iso: string) {
-  return new Date(iso).toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit' });
+  return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 function separatorLabel(iso: string) {
@@ -81,7 +81,7 @@ function separatorLabel(iso: string) {
   const time = timeLabel(iso);
   if (same(d, today)) return time;
   if (same(d, yest)) return `Yesterday ${time}`;
-  return `${d.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`;
+  return `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`;
 }
 
 // How much of the window the on-screen keyboard (plus Safari's own form
