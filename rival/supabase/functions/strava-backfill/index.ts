@@ -143,7 +143,7 @@ serve(async (req) => {
       // Resolves same-source re-syncs AND cross-source duplicates to one canonical
       // activities row — every importer must go through this, never a bespoke
       // upsert keyed on provider_activity_id (see _shared/activityDedup.ts).
-      const canonicalId = await resolveCanonicalActivityId(supabase, {
+      const resolved = await resolveCanonicalActivityId(supabase, {
         userId: user.id,
         provider: 'strava',
         providerActivityId,
@@ -153,6 +153,12 @@ serve(async (req) => {
         distanceMeters: activity.distance,
         rawPayload: sourceProvenance,
       })
+
+      // Overlaps an activity already recorded and saw less of the session —
+      // writing it would double-count one workout. The source is already
+      // linked, so this won't be reconsidered on the next sync.
+      if (resolved.discard) continue
+      const canonicalId = resolved.canonicalId
 
       const fields: Record<string, unknown> = {
         activity_type: canonicalType,

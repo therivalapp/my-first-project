@@ -179,8 +179,12 @@ serve(async (req) => {
     const event = await req.json()
     console.log('Webhook event:', JSON.stringify(event))
 
-    // Only process activity creates/updates
-    if (event.object_type !== 'activity' || !['create', 'update'].includes(event.aspect_type)) {
+    // Creates, updates and deletes. Deletes were ignored until 2026-09-23,
+    // which made RIVAL a one-way accumulator: a junk activity removed in
+    // Strava lived here forever, still counting toward Effort. Strava is the
+    // source of truth for anything it sent us, so tidying up there has to
+    // tidy up here.
+    if (event.object_type !== 'activity' || !['create', 'update', 'delete'].includes(event.aspect_type)) {
       return new Response(JSON.stringify({ received: true }), {
         headers: { 'Content-Type': 'application/json' },
         status: 200,
@@ -206,6 +210,73 @@ serve(async (req) => {
     if (connError || !connection) {
       console.log('No connection found for athlete:', stravaAthleteId)
       return new Response(JSON.stringify({ received: true }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      })
+    }
+
+    // Handled before the token refresh and the detail fetch, because a deleted
+    // activity no longer exists to fetch — asking Strava for it returns 404 and
+    // the event would be dropped. Scoped to this user and to strava-provided
+    // rows so it can never reach a manual entry or another account's data.
+    if (event.aspect_type === 'delete') {
+      // Resolved through activity_sources, not by matching
+      // activities.provider_activity_id directly. Two overlapping recordings
+      // of one session are merged into a single activities row, which keeps
+      // whichever provider_activity_id arrived first — so deleting the OTHER
+      // one in Strava would match nothing and the row would survive.
+      const { data: sourceRow } = await supabase
+        .from('activity_sources')
+        .select('activity_id')
+        .eq('user_id', connection.user_id)
+        .eq('provider', 'strava')
+        .eq('provider_activity_id', stravaActivityId)
+        .maybeSingle()
+
+      await supabase
+        .from('activity_sources')
+        .delete()
+        .eq('user_id', connection.user_id)
+        .eq('provider', 'strava')
+        .eq('provider_activity_id', stravaActivityId)
+
+      // Fall back to the direct match for rows imported before provenance was
+      // captured, which have no activity_sources entry at all.
+      const activityId = sourceRow?.activity_id ?? null
+      let removed = 0
+      if (activityId) {
+        // Only delete the activity once nothing else points at it. A merged
+        // row can legitimately have another source still standing, and that
+        // session genuinely still happened — dropping it would lose real
+        // training because a duplicate was tidied up.
+        const { count: remaining } = await supabase
+          .from('activity_sources')
+          .select('id', { count: 'exact', head: true })
+          .eq('activity_id', activityId)
+        if ((remaining ?? 0) === 0) {
+          const { count } = await supabase
+            .from('activities')
+            .delete({ count: 'exact' })
+            .eq('id', activityId)
+            .eq('user_id', connection.user_id)
+          removed = count ?? 0
+        } else {
+          console.log('Strava delete for', stravaActivityId, '— activity kept,', remaining, 'other source(s) still reference it')
+        }
+      } else {
+        const { count } = await supabase
+          .from('activities')
+          .delete({ count: 'exact' })
+          .eq('user_id', connection.user_id)
+          .eq('provider', 'strava')
+          .eq('provider_activity_id', stravaActivityId)
+        removed = count ?? 0
+      }
+
+      // RLS failures delete nothing and raise nothing, so the count is the
+      // only honest signal that this did what it claims.
+      console.log('Strava delete for', stravaActivityId, '— activities removed:', removed)
+      return new Response(JSON.stringify({ received: true, deleted: removed }), {
         headers: { 'Content-Type': 'application/json' },
         status: 200,
       })
@@ -258,7 +329,7 @@ serve(async (req) => {
       device_name: activity.device_name ?? null,
     }
 
-    const canonicalId = await resolveCanonicalActivityId(supabase, {
+    const resolved = await resolveCanonicalActivityId(supabase, {
       userId: connection.user_id,
       provider: 'strava',
       providerActivityId: stravaActivityId,
@@ -268,6 +339,17 @@ serve(async (req) => {
       distanceMeters: activity.distance,
       rawPayload: sourceProvenance,
     })
+
+    // Overlaps an activity already recorded and saw less of the session —
+    // writing it would double-count one workout. The source is already
+    // linked, so this won't be reconsidered on the next sync.
+    if (resolved.discard) {
+      return new Response(JSON.stringify({ received: true, skipped: 'overlapping duplicate' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      })
+    }
+    const canonicalId = resolved.canonicalId
 
     const fields = {
       activity_type: canonicalType,
