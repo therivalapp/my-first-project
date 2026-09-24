@@ -33,10 +33,8 @@ export function usePullToRefresh(onRefresh: () => void | Promise<void>) {
 
   // The listeners are attached once, so they would close over the first
   // render's values forever. Refs give them the live ones.
-  const pullRef = useRef(0);
   const refreshingRef = useRef(false);
   const onRefreshRef = useRef(onRefresh);
-  pullRef.current = pull;
   onRefreshRef.current = onRefresh;
 
   useEffect(() => {
@@ -44,12 +42,17 @@ export function usePullToRefresh(onRefresh: () => void | Promise<void>) {
 
     let startY = 0;
     let tracking = false;
+    // Tracked here rather than read back from state at touchend: setPull only
+    // reaches a ref on the next render, so a quick flick released right at the
+    // threshold could be judged on a stale value and silently not refresh.
+    let distance = 0;
 
     const onTouchStart = (e: TouchEvent) => {
       // Only start tracking from the very top. Anywhere else the gesture
       // belongs to the scroller, and stealing it would break normal scrolling.
       if (refreshingRef.current || node.scrollTop > 0 || e.touches.length !== 1) return;
       startY = e.touches[0].clientY;
+      distance = 0;
       tracking = true;
     };
 
@@ -59,19 +62,22 @@ export function usePullToRefresh(onRefresh: () => void | Promise<void>) {
       if (delta <= 0) {
         // Pulling back up: hand the gesture back rather than fighting it.
         tracking = false;
+        distance = 0;
         setPull(0);
         return;
       }
       // Needs { passive: false } to be allowed to preventDefault — without it
       // the page rubber-bands instead of showing the indicator.
       e.preventDefault();
-      setPull(Math.min(delta * RESISTANCE, MAX_PULL));
+      distance = Math.min(delta * RESISTANCE, MAX_PULL);
+      setPull(distance);
     };
 
     const finish = async () => {
       if (!tracking) return;
       tracking = false;
-      if (pullRef.current < THRESHOLD) { setPull(0); return; }
+      if (distance < THRESHOLD) { distance = 0; setPull(0); return; }
+      distance = 0;
 
       refreshingRef.current = true;
       setRefreshing(true);
