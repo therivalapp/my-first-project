@@ -7,6 +7,7 @@ export { RivalChip } from './RivalChip';
 export { RivalEmptyState } from './RivalEmptyState';
 export { RivalAvatar } from './RivalAvatar';
 export { RivalIcon, activityIconName } from './RivalIcon';
+export { ShortActivityReview } from './ShortActivityReview';
 export { RivalBackButton } from './RivalBackButton';
 export { RivalCalendarGrid } from './RivalCalendarGrid';
 export { RivalDateField } from './RivalDateField';
