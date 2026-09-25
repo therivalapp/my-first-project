@@ -21,3 +21,38 @@ input:focus, textarea:focus, button:focus, div:focus, [tabindex]:focus {
   --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
   --font-serif: Georgia, 'Times New Roman', serif;
 }
+
+/* Primary buttons on phones — see RivalButtonColors in constants/rivalTheme.ts.
+   639px matches BREAKPOINT_MOBILE_NAV (below 640 the app is the mobile app).
+   Unset on desktop, so every button falls back to its original colours. */
+@media (max-width: 639px) {
+  :root {
+    --rival-button-fill: #ffb59e;
+    --rival-button-label: #5c1902;
+    --rival-button-image: linear-gradient(135deg, #D97757 0%, #ffb59e 100%);
+  }
+}
+
+/* Home podium motion — see podiumRise/podiumSettle/podiumSheen in home.tsx.
+   Kept here because react-native-web drops inline animationKeyframes; the
+   components reference these by animationName instead. */
+@keyframes rivalPodiumRise {
+  0% { transform: scaleY(0.04); opacity: 0; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+@keyframes rivalPodiumSettle {
+  0% { transform: translateY(-14px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes rivalPodiumSheen {
+  0% { transform: translateX(-160%) skewX(-18deg); }
+  22% { transform: translateX(360%) skewX(-18deg); }
+  100% { transform: translateX(360%) skewX(-18deg); }
+}
+@keyframes rivalCrownDrift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [style*="rivalPodium"], [style*="rivalCrown"] { animation: none !important; }
+}

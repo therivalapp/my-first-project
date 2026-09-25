@@ -1,7 +1,7 @@
-import { useState, useCallback, useRef } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, ImageBackground, useWindowDimensions } from 'react-native';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { StyleSheet, TouchableOpacity, View, Text, Platform, ScrollView, Image, ImageBackground, useWindowDimensions, Animated } from 'react-native';
 import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
-import Svg, { Defs, LinearGradient, Polygon, Stop } from 'react-native-svg';
+import Svg, { Defs, Line, LinearGradient, Polygon, Stop } from 'react-native-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
@@ -9,8 +9,9 @@ import { connectStrava } from '../lib/strava';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { notify } from '../lib/notify';
 import { getMondayOfWeek, calculateStreak } from '../lib/streak';
-import { getCurrentSeasonYear, daysUntilSeasonEnd, getSeasonStartISO } from '../lib/season';
-import { getLevel } from '../lib/xp';
+import { getCurrentSeasonYear, daysUntilSeasonEnd, getSeasonStartISO, deviceTimeZone } from '../lib/season';
+import { getLevel, xpProgressInLevel, LEVELS } from '../lib/xp';
+import { fetchReactionsOn, impactTotals } from '../lib/reactions';
 import { computeGoalProgress, goalUnit, GoalRow } from '../lib/goalProgress';
 // Same set as my-activities.tsx/team-hub.tsx's METERS_SPORTS — those short
 // distances read as near-zero once rounded to km ("0.7km" is really "700m").
@@ -19,8 +20,8 @@ import { computeGoalProgress, goalUnit, GoalRow } from '../lib/goalProgress';
 // to metres at display time only, for these activity types only.
 const METERS_SPORTS = new Set(['Swim', 'Rowing']);
 import { formatTeamName, formatRaceName } from '../lib/identity';
-import { RivalButton, RivalCard, RivalProgressBar, RivalChallengeRing, RivalIcon, RivalTopNav } from '../components/rival';
-import { RivalColors, RivalRadius, RivalType, RivalFontFamily, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalButton, RivalCard, RivalProgressBar, RivalChallengeRing, RivalIcon, RivalTopNav, activityIconName, type RivalIconName } from '../components/rival';
+import { RivalColors, RivalRadius, RivalType, RivalFontFamily, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
 type League = { id: string; name: string; invite_code: string; logo_url: string | null; recentCount?: number };
@@ -69,7 +70,7 @@ function weeklyRankStory(standings: WeeklyLeaderEntry[], selfIndex: number): Ran
     if (!second) return { rankIcon: 'medal', rankLabel: null, before: "You're leading", gap: null, after: '' };
     const gap = Math.round(leader.points - second.points);
     return gap === 0
-      ? { rankIcon: 'medal', rankLabel: null, before: 'Will you take the lead?', gap: null, after: '' }
+      ? { rankIcon: 'medal', rankLabel: null, before: 'Level at the top', gap: null, after: '' }
       : { rankIcon: 'medal', rankLabel: null, before: 'Leading by ', gap, after: '' };
   }
   // Everyone else compares to whoever's directly ahead of them, not always
@@ -80,6 +81,9 @@ function weeklyRankStory(standings: WeeklyLeaderEntry[], selfIndex: number): Ran
   const rankIcon = selfIndex <= 2 ? 'medal' : null;
   const rankLabel = selfIndex <= 2 ? null : `${selfIndex + 1}th`;
   if (gap === 0) return { rankIcon, rankLabel, before: `Tied with ${front.name}`, gap: null, after: '' };
+  // Kept by name on purpose (Ricky, 2026-09-25): "7 behind Sandy" is the
+  // friendly rivalry RIVAL is about — a real person just ahead is what gets
+  // you out the door. Tone rules still apply to everything around it.
   return { rankIcon, rankLabel, before: '', gap, after: ` Behind ${front.name}` };
 }
 
@@ -128,25 +132,98 @@ const SHARD_SLOPE: Record<number, [number, number]> = { 0: [0, 0.20], 1: [0.15, 
 // a curve gets closer to an actual tapered point without the hard facets.
 const PODIUM_LENS_CLIP =
   'polygon(0% 50%, 2% 32%, 5% 16%, 10% 6%, 18% 1%, 30% 0%, 70% 0%, 82% 1%, 90% 6%, 95% 16%, 98% 32%, 100% 50%, 98% 68%, 95% 84%, 90% 94%, 82% 99%, 70% 100%, 30% 100%, 18% 99%, 10% 94%, 5% 84%, 2% 68%)';
-function shardPoints(slope: [number, number], height: number): string {
-  const [tl, tr] = slope;
-  return `0,${tl * height} 100,${tr * height} 100,${height} 0,${height}`;
+// Podium motion (web). The pillars rise into place when the card appears —
+// third, then second, then first, so the leader lands last — the avatars
+// settle onto them, a slow band of light passes across each pillar every few
+// seconds, and the crown drifts. The keyframes live in global.css (react-
+// native-web drops inline keyframes); native keeps the still podium. Skipped entirely for
+// anyone who has asked their device for reduced motion.
+const PODIUM_MOTION = Platform.OS === 'web' && typeof window !== 'undefined'
+  && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const RISE_DELAY_MS: Record<0 | 1 | 2, number> = { 0: 420, 1: 260, 2: 100 };
+
+function podiumRise(effRank: 0 | 1 | 2): any {
+  if (!PODIUM_MOTION) return null;
+  return {
+    animationName: 'rivalPodiumRise',
+    animationDuration: '760ms',
+    animationDelay: `${RISE_DELAY_MS[effRank]}ms`,
+    animationTimingFunction: 'cubic-bezier(0.2, 0.9, 0.25, 1)',
+    animationFillMode: 'both',
+    transformOrigin: 'bottom',
+  };
 }
+
+function podiumSettle(effRank: 0 | 1 | 2): any {
+  if (!PODIUM_MOTION) return null;
+  return {
+    animationName: 'rivalPodiumSettle',
+    animationDuration: '520ms',
+    animationDelay: `${RISE_DELAY_MS[effRank] + 520}ms`,
+    animationTimingFunction: 'cubic-bezier(0.3, 1.4, 0.5, 1)',
+    animationFillMode: 'both',
+  };
+}
+
+// The band of light: runs across in the first quarter of a 7s loop, then
+// rests, so it reads as light catching the pillar rather than a loading bar.
+function podiumSheen(effRank: 0 | 1 | 2): any {
+  if (!PODIUM_MOTION) return null;
+  return {
+    animationName: 'rivalPodiumSheen',
+    animationDuration: '7000ms',
+    animationDelay: `${1600 + effRank * 700}ms`,
+    animationIterationCount: 'infinite',
+    animationTimingFunction: 'ease-in-out',
+    animationFillMode: 'both',
+  };
+}
+
+const CROWN_DRIFT: any = PODIUM_MOTION ? {
+  animationName: 'rivalCrownDrift',
+  animationDuration: '3200ms',
+  animationIterationCount: 'infinite',
+  animationTimingFunction: 'ease-in-out',
+} : null;
+
+// The pillar as a solid block: a front face, a lit top face and a shaded right
+// side, drawn in the pillar's 0–100 wide viewBox. DEPTH is in pixels (the y
+// axis is 1:1), SIDE in viewBox x-units (~11px on an 82px pillar).
+const PILLAR_DEPTH = 8;
+const PILLAR_SIDE = 14;
+function pillarFaces(slope: [number, number], h: number) {
+  const [tl, tr] = slope;
+  const xr = 100 - PILLAR_SIDE;
+  const yAt = (x: number) => tl * h + (tr - tl) * h * (x / 100); // the shard's slanted top line
+  const fL = yAt(0) + PILLAR_DEPTH;   // front face, top-left
+  const fR = yAt(xr) + PILLAR_DEPTH;  // front face, top-right
+  const bR = yAt(xr);                 // back edge, above the front's right corner
+  const bL = yAt(0);
+  return {
+    front: `0,${fL} ${xr},${fR} ${xr},${h} 0,${h}`,
+    top: `0,${fL} ${xr},${fR} 100,${bR} ${PILLAR_SIDE},${bL}`,
+    side: `${xr},${fR} 100,${bR} 100,${h - PILLAR_DEPTH} ${xr},${h}`,
+    frontEdge: { x1: 0, y1: fL, x2: xr, y2: fR },
+    // The front face as a CSS clip-path, for the band of light.
+    frontClip: `polygon(0% ${(fL / h) * 100}%, ${xr}% ${(fR / h) * 100}%, ${xr}% 100%, 0% 100%)`,
+  };
+}
+
 // Team Momentum's status line — reuses the same weeklyLeader standings the
 // Weekly Leader card computes for this same team (leagues[0], the most
 // active one) instead of firing a second query. Priority: leading is the
 // most exciting thing that can be true, a specific gap is more motivating
 // than a headcount, and named teammates ("Sandy, Emma and 3 others") pull
 // harder than a raw count when you're not on the board yet. The "haven't
-// trained" case is framed as an invite ("Join them"), never a callout —
+// trained" case is framed as an invite ("Add activity"), never a callout —
 // AGENTS.md's voice rule is encourage, never pressure or shame.
 function momentumStory(trainers: MomentumTrainers | null, weeklyLeader: WeeklyLeader | null, leagueId: string): MomentumContent {
   if (weeklyLeader && weeklyLeader.leagueId === leagueId && weeklyLeader.standings.length > 0) {
     const selfIndex = weeklyLeader.standings.findIndex((e) => e.isSelf);
-    if (selfIndex === 0) return { message: "You're leading this week — keep it going", cta: 'View Team' };
+    if (selfIndex === 0) return { message: "You're leading this week", cta: 'View team' };
     if (selfIndex > 0) {
       const gap = Math.round(weeklyLeader.standings[0].points - weeklyLeader.standings[selfIndex].points);
-      return { message: `${gap} Effort behind the lead`, cta: 'Jump back in' };
+      return { message: `${gap} Effort to 1st this week`, cta: 'View team' };
     }
   }
   if (trainers && trainers.leagueId === leagueId && trainers.names.length > 0) {
@@ -157,10 +234,10 @@ function momentumStory(trainers: MomentumTrainers | null, weeklyLeader: WeeklyLe
         : totalCount === 2
         ? `${names[0]} and ${names[1]}`
         : `${names.slice(0, 2).join(', ')} and ${totalCount - 2} ${totalCount - 2 === 1 ? 'other' : 'others'}`;
-    if (trainers.selfTrained) return { message: `${list} trained today too — nice work`, cta: 'Jump back in' };
+    if (trainers.selfTrained) return { message: `${list} also trained today`, cta: 'View team' };
     return { message: `${list} trained today`, cta: 'Join them' };
   }
-  return { message: "Nobody's trained yet this week", cta: 'Be the First' };
+  return { message: 'No activities logged this week', cta: 'Add activity' };
 }
 type FeaturedGoal = {
   id: string;
@@ -251,18 +328,196 @@ function heroValueFontSize(text: string, availableWidth: number): number {
 
 
 
+// Loading state for the phone layout: the page's own shapes — podium card,
+// Add activity pill, Today row, Focus ring, Legacy — as softly pulsing warm
+// blocks, so the layout doesn't jump when real data arrives.
+function useSkeletonPulse() {
+  const pulse = useRef(new Animated.Value(0.45)).current;
+  useEffect(() => {
+    const loop = Animated.loop(Animated.sequence([
+      Animated.timing(pulse, { toValue: 1, duration: 800, useNativeDriver: Platform.OS !== 'web' }),
+      Animated.timing(pulse, { toValue: 0.45, duration: 800, useNativeDriver: Platform.OS !== 'web' }),
+    ]));
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+  return pulse;
+}
+
+function SkeletonBar({ width, height, radius = 6, style }: { width: number | `${number}%`; height: number; radius?: number; style?: any }) {
+  const pulse = useSkeletonPulse();
+  return <Animated.View style={[{ width, height, borderRadius: radius, backgroundColor: 'rgba(255,209,190,0.10)', opacity: pulse }, style]} />;
+}
+
+function MobileHomeSkeleton() {
+  const pulse = useSkeletonPulse();
+  const block = (st: any) => <Animated.View style={[styles.mSkel, st, { opacity: pulse }]} />;
+  return (
+    <View accessibilityLabel="Loading" style={{ gap: 0 }}>
+      <View style={[styles.mLeaderCard, styles.mSkelLeader]}>
+        {block({ width: 150, height: 12, borderRadius: 6 })}
+        <View style={styles.mSkelPodium}>
+          {block({ width: 72, height: 70, borderTopLeftRadius: 10, borderTopRightRadius: 10, borderRadius: 0 })}
+          {block({ width: 72, height: 104, borderTopLeftRadius: 10, borderTopRightRadius: 10, borderRadius: 0 })}
+          {block({ width: 72, height: 52, borderTopLeftRadius: 10, borderTopRightRadius: 10, borderRadius: 0 })}
+        </View>
+        {block({ width: 190, height: 22, borderRadius: 8, marginTop: 22 })}
+        {block({ width: 150, height: 10, borderRadius: 5, marginTop: 12 })}
+      </View>
+      {block({ alignSelf: 'center', width: '70%', height: 48, borderRadius: 999, marginTop: 4 })}
+      {block({ height: 92, borderRadius: 16, marginTop: 14, marginHorizontal: -8 })}
+      <View style={{ alignItems: 'center', marginTop: 34 }}>
+        {block({ width: 90, height: 22, borderRadius: 8 })}
+        {block({ width: 200, height: 200, borderRadius: 100, marginTop: 22, backgroundColor: 'transparent', borderWidth: 14, borderColor: 'rgba(255,209,190,0.08)' })}
+      </View>
+      <View style={{ alignItems: 'center', marginTop: 48 }}>
+        {block({ width: 110, height: 22, borderRadius: 8 })}
+        {block({ width: 180, height: 44, borderRadius: 10, marginTop: 20 })}
+        {block({ alignSelf: 'stretch', height: 92, borderRadius: 16, marginTop: 28, marginHorizontal: -8 })}
+      </View>
+    </View>
+  );
+}
+
+// Legacy: the closest lifetime milestone, so the section always points at
+// something just ahead rather than only reporting totals. Each candidate is
+// measured as progress through its own step (the last 100 km, the last 50
+// activities, the current rank) and the one furthest along wins.
+type Milestone = { title: string; toGo: string; pct: number };
+function nextMilestone(km: number, activities: number, elevM: number, seasonEffort: number, respect: number): Milestone {
+  const step = (value: number, size: number) => {
+    const next = (Math.floor(value / size) + 1) * size;
+    return { next, pct: (value - (next - size)) / size, left: next - value };
+  };
+  const d = step(km, km < 100 ? 25 : 100);
+  const a = step(activities, activities < 100 ? 10 : 50);
+  const e = step(elevM, elevM < 10000 ? 1000 : 5000);
+  const candidates: Milestone[] = [
+    { title: `${d.next.toLocaleString()} km lifetime`, toGo: `${d.left.toLocaleString()} km to go`, pct: d.pct },
+    { title: `${a.next.toLocaleString()} activities`, toGo: `${a.left.toLocaleString()} to go`, pct: a.pct },
+    { title: `${e.next.toLocaleString()} m climbed`, toGo: `${e.left.toLocaleString()} m to go`, pct: e.pct },
+  ];
+  // Recognition from other people is a milestone too — only once someone has
+  // given some, so a new account isn't pointed at a number it can't move.
+  if (respect > 0) {
+    const rs = step(respect, respect < 100 ? 25 : respect < 1000 ? 100 : 250);
+    candidates.push({ title: `${rs.next.toLocaleString()} Respect received`, toGo: `${rs.left.toLocaleString()} to go`, pct: rs.pct });
+  }
+  const level = getLevel(seasonEffort);
+  const nextLevel = LEVELS.find((l) => l.level === level.level + 1);
+  if (nextLevel) {
+    const p = xpProgressInLevel(seasonEffort);
+    candidates.push({ title: `${nextLevel.name} rank`, toGo: `${Math.ceil(p.needed - p.current).toLocaleString()} Effort to go`, pct: p.pct });
+  }
+  return candidates.reduce((best, c) => (c.pct > best.pct ? c : best));
+}
+
+// "Run", "Weight training" — Strava's CamelCase type as a short display name.
+function activityShortName(type: string | null | undefined): string {
+  if (!type) return 'Activity';
+  if (type === 'WeightTraining') return 'Lift';
+  if (/^[A-Z]{2,}$/.test(type) || type === 'CrossFit') return type;
+  const words = type.replace(/([a-z])([A-Z])/g, '$1 $2');
+  return words.charAt(0) + words.slice(1).toLowerCase();
+}
+
+// "Today", "Yesterday", "Tue", then a short date once it's over a week —
+// short forms, since it sits in a third-width stat cell.
+function relativeDayLabel(iso: string): string {
+  const then = new Date(iso); then.setHours(0, 0, 0, 0);
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const days = Math.round((now.getTime() - then.getTime()) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return then.toLocaleDateString(undefined, { weekday: 'short' });
+  return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+// The lifetime total counts up from 90% the first time it scrolls into view
+// (and again whenever it changes), so the biggest number on Home lands with
+// some weight instead of just sitting there. Respects reduced motion.
+function CountUpText({ value, style }: { value: number; style: any }) {
+  const [shown, setShown] = useState(value);
+  const ref = useRef<any>(null);
+  const played = useRef<number | null>(null);
+  useEffect(() => {
+    if (played.current === value) { setShown(value); return; }
+    const reduced = Platform.OS === 'web' && typeof window !== 'undefined'
+      && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (reduced || value <= 0) { played.current = value; setShown(value); return; }
+    let raf = 0;
+    let io: IntersectionObserver | null = null;
+    const run = () => {
+      played.current = value;
+      const from = Math.round(value * 0.9);
+      const start = Date.now();
+      const tick = () => {
+        const p = Math.min(1, (Date.now() - start) / 900);
+        setShown(Math.round(from + (value - from) * (1 - Math.pow(1 - p, 3))));
+        if (p < 1) raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    };
+    const node = ref.current;
+    if (Platform.OS === 'web' && node instanceof Element && typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver((entries) => {
+        if (entries.some((en) => en.isIntersecting)) { io?.disconnect(); run(); }
+      }, { threshold: 0.6 });
+      io.observe(node);
+    } else {
+      run();
+    }
+    return () => { cancelAnimationFrame(raf); io?.disconnect(); };
+  }, [value]);
+  return <Text ref={ref} style={style}>{shown.toLocaleString()}</Text>;
+}
+
+// The heading every mobile Home section opens with — the same pairing as the
+// Weekly Leader's "You're leading" line: a serif italic title, then a small
+// spaced-caps line set between two fading hairlines. One component so the
+// sections can't drift apart in size again.
+function MHeading({ title, subtitle, icon }: { title?: string; subtitle?: string | null; icon?: RivalIconName }) {
+  return (
+    <View style={styles.mHeading}>
+      {title ? <Text style={styles.mStatusHeadline}>{title}</Text> : null}
+      {subtitle ? (
+        <View style={styles.mStatusCountdown}>
+          <View style={[styles.mStatusRule, styles.mStatusRuleLeft]} />
+          {icon ? <RivalIcon name={icon} size={12} color="rgba(255,181,158,0.7)" /> : null}
+          <Text style={styles.mStatusCountdownText}>{subtitle}</Text>
+          <View style={[styles.mStatusRule, styles.mStatusRuleRight]} />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
   return (
     <>
-                <Text style={styles.mLeaderKicker}>WEEKLY LEADER</Text>
-                {leader && <Text style={styles.mLeaderTeamName}>{leader.teamName}</Text>}
+                <View style={styles.mLeaderHead}>
+                  {leader
+                    ? <MHeading title={leader.teamName} subtitle="Weekly leader" />
+                    : <MHeading subtitle="Weekly leader" />}
+                </View>
 
                 {leader === null || leader.standings.length === 0 ? (
                   <View style={styles.mLeaderEmpty}>
-                    <View style={styles.medalRing}><RivalIcon name="medal" size={28} color="#ECC654" /></View>
-                    <Text style={styles.mLeaderEmptyTitle}>TAKE THE LEAD</Text>
-                    <Text style={styles.mLeaderEmptySub}>Earn the first Effort</Text>
-                    <View style={styles.mLeaderEmptyDivider} />
+                    {/* An empty podium waiting to be filled — the same three
+                        pillars as a live board, drawn as faint outlines with
+                        the medal over first place, instead of a lone icon. */}
+                    <View style={styles.mGhostPodium}>
+                      {[{ place: 2, h: 62 }, { place: 1, h: 92 }, { place: 3, h: 46 }].map(({ place, h }) => (
+                        <View key={place} style={[styles.mGhostPillar, { height: h }, place === 1 && styles.mGhostPillarFirst, podiumRise((place - 1) as 0 | 1 | 2)]}>
+                          {place === 1 && (
+                            <View style={[styles.medalRing, styles.mGhostMedal]}><RivalIcon name="medal" size={26} color="#ECC654" /></View>
+                          )}
+                          <Text style={styles.mGhostPlace}>{place}</Text>
+                        </View>
+                      ))}
+                    </View>
+                    <View style={styles.mGhostStage} />
+                    <MHeading title="Take the lead" subtitle="Earn the first Effort" />
                   </View>
                 ) : (() => {
                   const { standings, daysRemaining } = leader;
@@ -342,7 +597,8 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                             ? (colIdx === 0 ? [0, 0.15] : colIdx === 2 ? [0.15, 0] : SHARD_SLOPE[colIdx])
                             : SHARD_SLOPE[colIdx];
                           const [shardTl, shardTr] = shardSlope;
-                          const slantClearance = Math.ceil(Math.max(shardTl, shardTr) * pillarHeight) + 4;
+                          const slantClearance = Math.ceil(Math.max(shardTl, shardTr) * pillarHeight) + PILLAR_DEPTH + 4;
+                          const faces = pillarFaces(shardSlope, pillarHeight);
                           const effPadTop = Math.max(slantClearance, Math.min(rankStyle.padTop, pillarHeight - MIN_CONTENT_H - rankStyle.padBottom));
                           // Raising padTop to clear the slant can eat back into the room the
                           // MIN_CONTENT_H clamp above just freed up — give padBottom first
@@ -354,10 +610,11 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                 style={[
                                   { position: 'relative' },
                                   Platform.OS === 'web' ? ({ filter: `drop-shadow(0 0 ${rankStyle.avatarGlowRadius}px ${rankStyle.avatarGlow})` } as any) : null,
+                                  podiumSettle(effRank),
                                 ]}
                               >
                                 {effRank === 0 && (
-                                  <View style={[styles.mPodiumCrownWrap, { top: -crownOffset }]}>
+                                  <View style={[styles.mPodiumCrownWrap, { top: -crownOffset }, CROWN_DRIFT]}>
                                     <RivalIcon name="crown" size={24} color="#FFD700" />
                                   </View>
                                 )}
@@ -388,6 +645,7 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                 style={[
                                   { width: '100%', height: pillarHeight, marginTop: 2 },
                                   Platform.OS === 'web' ? ({ filter: `drop-shadow(0 0 ${rankStyle.glowRadius}px ${rankStyle.glow})` } as any) : null,
+                                  podiumRise(effRank),
                                 ]}
                               >
                                 <Svg width="100%" height="100%" viewBox={`0 0 100 ${pillarHeight}`} preserveAspectRatio="none" style={{ position: 'absolute' }}>
@@ -396,9 +654,33 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                       <Stop offset="0" stopColor={rankStyle.gradFrom} />
                                       <Stop offset="1" stopColor={rankStyle.gradTo} />
                                     </LinearGradient>
+                                    {/* Side light: brighter on the left face, shaded on the
+                                        right, so the pillar reads as a solid block, not a flat card. */}
+                                    <LinearGradient id={`podiumFacet${colIdx}`} x1="0" y1="0" x2="1" y2="0">
+                                      <Stop offset="0" stopColor="#ffffff" stopOpacity={0.14} />
+                                      <Stop offset="0.45" stopColor="#ffffff" stopOpacity={0} />
+                                      <Stop offset="1" stopColor="#000000" stopOpacity={0.28} />
+                                    </LinearGradient>
                                   </Defs>
+                                  {/* Side face: the pillar's colour, shaded. */}
+                                  <Polygon points={faces.side} fill={`url(#podiumGrad${colIdx})`} />
                                   <Polygon
-                                    points={shardPoints(shardSlope, pillarHeight)}
+                                    points={faces.side}
+                                    fill="#000000" fillOpacity={0.42}
+                                    stroke={rankStyle.tint} strokeOpacity={0.35} strokeWidth={1}
+                                    strokeLinejoin="miter" vectorEffect="non-scaling-stroke"
+                                  />
+                                  {/* Top face: catches the light. */}
+                                  <Polygon points={faces.top} fill={rankStyle.tint} fillOpacity={effRank === 0 ? 0.42 : 0.3} />
+                                  <Polygon
+                                    points={faces.top}
+                                    fill="#ffffff" fillOpacity={0.12}
+                                    stroke={rankStyle.tint} strokeOpacity={0.6} strokeWidth={1}
+                                    strokeLinejoin="miter" vectorEffect="non-scaling-stroke"
+                                  />
+                                  {/* Front face. */}
+                                  <Polygon
+                                    points={faces.front}
                                     fill={`url(#podiumGrad${colIdx})`}
                                     stroke={rankStyle.tint}
                                     strokeWidth={1.25}
@@ -406,16 +688,34 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                                     strokeLinejoin="miter"
                                     // The viewBox's non-uniform x/y scaling (preserveAspectRatio="none")
                                     // otherwise stretches the stroke unevenly, blunting the sharp
-                                    // corners at the shard's tips instead of a clean miter point.
+                                    // corners instead of a clean miter point.
+                                    vectorEffect="non-scaling-stroke"
+                                  />
+                                  <Polygon points={faces.front} fill={`url(#podiumFacet${colIdx})`} />
+                                  {/* The lit front edge, where the top face meets the front. */}
+                                  <Line
+                                    {...faces.frontEdge}
+                                    stroke="#ffffff" strokeOpacity={effRank === 0 ? 0.75 : 0.5} strokeWidth={1.5}
                                     vectorEffect="non-scaling-stroke"
                                   />
                                 </Svg>
-                                <View style={{ flex: 1, alignItems: 'center', paddingTop: effPadTop, paddingBottom: effPadBottom }}>
+                                {PODIUM_MOTION && (
+                                  <View
+                                    pointerEvents="none"
+                                    style={[
+                                      styles.mPodiumSheenClip,
+                                      { clipPath: faces.frontClip } as any,
+                                    ]}
+                                  >
+                                    <View style={[styles.mPodiumSheen, { opacity: effRank === 0 ? 1 : 0.6 }, podiumSheen(effRank)]} />
+                                  </View>
+                                )}
+                                <View style={{ flex: 1, alignItems: 'center', paddingTop: effPadTop, paddingBottom: effPadBottom, marginRight: `${PILLAR_SIDE}%` }}>
                                   <Text style={[styles.mPodiumName, { color: rankStyle.tint, fontSize: rankStyle.nameSize, lineHeight: Math.round(rankStyle.nameSize * 1.15), letterSpacing: rankStyle.nameLetterSpacing }]} numberOfLines={1}>
                                     {entry.name}
                                   </Text>
                                   <Text style={[styles.mPodiumPoints, { fontSize: rankStyle.ptsSize, lineHeight: Math.round(rankStyle.ptsSize * 1.15), color: rankStyle.ptsColor }]}>{entry.points}</Text>
-                                  <Text style={{ fontSize: 10, lineHeight: 12, color: rankStyle.ptsTint, fontWeight: '500', flexShrink: 0 }}>pts</Text>
+                                  <Text style={{ fontSize: 10, lineHeight: 12, color: rankStyle.ptsTint, fontWeight: '500', flexShrink: 0 }}>Effort</Text>
                                 </View>
                               </View>
                             </View>
@@ -426,55 +726,43 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
 
                       {(() => {
                         const story = selfIndex !== -1 ? weeklyRankStory(standings, selfIndex) : null;
-                        // With no gap number, the title is just a short line of text
-                        // ("Who's taking it?" / "You're leading") rather than a big
-                        // number anchoring the row on the left — center both lines in
-                        // the capsule instead of left-aligning them against its
-                        // number-driven width.
-                        const centered = !!story && story.gap === null;
-                        // "N Behind X" — the gap number leads the line, with text
-                        // trailing after it (unlike "Leading by N", where the number
-                        // trails). Real flex row+column instead of a hand-tuned fixed
-                        // marginLeft — the old fixed 46px offset only happened to line
-                        // "days remaining" up under "Behind" for whatever digit-width
-                        // gap number it was originally eyeballed against, and visibly
-                        // drifted for any other width (e.g. a single-digit gap).
-                        const numberLeads = !!story && story.gap !== null && story.before === '';
-                        if (numberLeads && story) {
-                          return (
-                            <View style={styles.mPodiumMetaCapsule}>
-                              <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                                <Text style={{ color: RivalColors.accentText, fontWeight: '700', fontSize: 31, lineHeight: 31 }}>{story.gap}</Text>
-                                <View style={{ marginLeft: 6, paddingTop: 3 }}>
-                                  <Text style={styles.mPodiumOutsideRow}>{story.after.trim()}</Text>
-                                  <Text style={[styles.mLeaderFooterMeta, { marginLeft: 0, marginTop: -2 }]}>{endsLabel}</Text>
-                                </View>
-                              </View>
-                            </View>
-                          );
-                        }
+                        // Gold when you hold the top spot (it matches the
+                        // leader's gold pillar above), salmon when you're
+                        // chasing — the colour carries the story as much as
+                        // the words do.
+                        const leading = selfIndex === 0;
+                        const numberStyle = [styles.mStatusNumber, { color: leading ? RivalColors.accentGold : RivalColors.accentText }];
                         return (
-                          <View style={[styles.mPodiumMetaCapsule, (centered || !story) && { alignItems: 'center' }]}>
-                            {story && (
-                              <Text style={[styles.mPodiumOutsideRow, centered && { textAlign: 'center' }]}>
-                                {story.before}
-                                {story.gap !== null && <Text style={{ color: RivalColors.accentText, fontWeight: '700', fontSize: 31 }}>{story.gap}</Text>}
-                              </Text>
-                            )}
-                            {/* The -18 pull-up is tuned against rows that have trailing "Behind
-                                Sandy" text after the number — that trailing text is what actually
-                                gives the row its taller rendered height. Both "leading" branches
-                                (solo, or "Leading by N") have no trailing text, so the row is
-                                shorter and the same pull-up overlaps this text on top of it —
-                                regardless of whether a gap number is present. */}
-                            <Text style={[
-                              styles.mLeaderFooterMeta,
-                              // Only a row with trailing text after the number
-                              // ("3 Behind Sandy") is tall enough to tuck under.
-                              story && story.after ? { marginTop: -18, marginLeft: 46 } : null,
-                              story && !story.after ? { marginTop: -3 } : null,
-                              (centered || !story) && { textAlign: 'center', alignSelf: 'center' },
-                            ]}>{endsLabel}</Text>
+                          // No capsule: a grey bordered box read as a generic
+                          // UI chip bolted onto the podium. This is a headline
+                          // in the brand serif, with the countdown set between
+                          // hairlines that echo the stage line above.
+                          <View style={styles.mStatus}>
+                            {/* Number and words as siblings in a centred row, not
+                                one nested Text: nested spans share a baseline, so
+                                the words sat level with the foot of the big number
+                                instead of across its middle. */}
+                            {story ? (
+                              <View style={styles.mStatusLine}>
+                                {story.gap !== null && story.before === '' ? (
+                                  <>
+                                    <Text style={numberStyle}>{story.gap}</Text>
+                                    <Text style={[styles.mStatusHeadline, styles.mStatusBeside]}>{story.after.trim()}</Text>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Text style={[styles.mStatusHeadline, story.gap !== null && styles.mStatusBeside]}>{story.before.trim()}</Text>
+                                    {story.gap !== null ? <Text style={numberStyle}>{story.gap}</Text> : null}
+                                  </>
+                                )}
+                              </View>
+                            ) : null}
+                            <View style={styles.mStatusCountdown}>
+                              <View style={[styles.mStatusRule, styles.mStatusRuleLeft]} />
+                              <RivalIcon name="timerOutline" size={12} color="rgba(255,181,158,0.7)" />
+                              <Text style={styles.mStatusCountdownText}>{endsLabel}</Text>
+                              <View style={[styles.mStatusRule, styles.mStatusRuleRight]} />
+                            </View>
                           </View>
                         );
                       })()}
@@ -488,10 +776,7 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
 export default function HomeScreen() {
   const [stravaConnected, setStravaConnected] = useState(true);
   const [leagues, setLeagues] = useState<League[]>([]);
-  // Populated by loadAll() below from real account data. When the real
-  // standings are exactly 2 people, loadAll() fabricates a 3rd teammate
-  // ("Jordan") so the 3-column podium layout can still be previewed without
-  // a real 3rd teammate — see the previewStandings injection there.
+  // Populated by loadAll() below from real account data.
   // One entry per team the user belongs to (mobile Weekly Leader card swipes
   // across all of them); `weeklyLeader` below stays the most-active team's
   // data, same as before this became a list, so every other reader of it
@@ -501,24 +786,45 @@ export default function HomeScreen() {
   const leaderScrollRef = useRef<ScrollView>(null);
   const weeklyLeader = weeklyLeaders[0] ?? null;
   const [momentumTrainers, setMomentumTrainers] = useState<MomentumTrainers | null>(null);
-  const [nextRace, setNextRace] = useState<NextRace>({ name: 'Auckland Marathon', race_date: '2026-10-25' });
-  const [totalDistanceKm, setTotalDistanceKm] = useState(1037);
-  const [totalElevationM, setTotalElevationM] = useState(20937);
-  const [totalTimeMinutes, setTotalTimeMinutes] = useState(188 * 60 + 33);
+  const [nextRace, setNextRace] = useState<NextRace>(null);
+  const [totalDistanceKm, setTotalDistanceKm] = useState(0);
+  const [totalElevationM, setTotalElevationM] = useState(0);
+  const [totalTimeMinutes, setTotalTimeMinutes] = useState(0);
   // Lifetime effort/activity counts — kept separate from totalXp (season-
   // scoped, drives getLevel()) so the LEGACY card's four numbers are all the
   // same timeframe without changing what powers the user's rank.
-  const [lifetimeXp, setLifetimeXp] = useState(13038);
-  const [lifetimeActivityCount, setLifetimeActivityCount] = useState(223);
-  const [weeklyStreak, setWeeklyStreak] = useState(16);
+  const [lifetimeXp, setLifetimeXp] = useState(0);
+  const [lifetimeActivityCount, setLifetimeActivityCount] = useState(0);
+  const [weeklyStreak, setWeeklyStreak] = useState(0);
   // Today-only Effort — new, mobile Legacy section's "Effort today" stat.
   // Derived from the same `activities` array loadAll() already fetches, not
   // a new query.
-  const [todayEffort, setTodayEffort] = useState(42);
-  const [rankName, setRankName] = useState<string | null>('Legend');
-  const [featuredGoal, setFeaturedGoal] = useState<FeaturedGoal | null>({
-    id: 'debug', title: 'Run • 100 km', activityLabel: 'Run', progress: 24.6, target: 100, unit: 'km', pct: 0.246, daysLeft: 3,
-  });
+  const [todayEffort, setTodayEffort] = useState(0);
+  const [rankName, setRankName] = useState<string | null>(null);
+  // Legacy: what moved this week, the most recent session, and this season's
+  // Effort (for the rank milestone) — all from the activities already loaded.
+  const [legacyWeek, setLegacyWeek] = useState({ effort: 0, count: 0, km: 0, elevM: 0 });
+  const [lastActivity, setLastActivity] = useState<{ type: string | null; startedAt: string } | null>(null);
+  const [seasonEffortTotal, setSeasonEffortTotal] = useState(0);
+  // Recognition: the latest activity of yours someone reacted to in the last
+  // three days (the slim line under Add activity), and lifetime Respect
+  // received (a Legacy milestone candidate).
+  const [recognition, setRecognition] = useState<{
+    names: string[]; faces: { id: string; url: string | null; initial: string }[];
+    others: number; inspiredOnly: boolean; activityType: string | null;
+  } | null>(null);
+  const [respectReceived, setRespectReceived] = useState(0);
+  const [impact, setImpact] = useState({ respect: 0, inspired: 0, people: 0 });
+  const hasImpact = impact.respect + impact.inspired > 0;
+  const [legacyBoxWidth, setLegacyBoxWidth] = useState(0);
+  const [legacyPage, setLegacyPage] = useState(0);
+  const legacyScrollRef = useRef<ScrollView>(null);
+  const [featuredGoal, setFeaturedGoal] = useState<FeaturedGoal | null>(null);
+  // False until the first load finishes. Every figure above starts empty, not
+  // with example numbers, and the phone layout shows a skeleton until then —
+  // so nobody ever sees placeholder figures that look like someone's real data.
+  // Later reloads (returning to the tab, pull to refresh) keep the last data up.
+  const [loaded, setLoaded] = useState(false);
   const [goalsCardHovered, setGoalsCardHovered] = useState(false);
   const [leaderCardHovered, setLeaderCardHovered] = useState(false);
   const [momentumCardHovered, setMomentumCardHovered] = useState(false);
@@ -533,6 +839,44 @@ export default function HomeScreen() {
   const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadAll());
 
   async function loadAll() {
+    try {
+      await loadAllData();
+    } finally {
+      setLoaded(true);
+    }
+  }
+
+  async function loadRecognition(uId: string, activities: any[]) {
+    const all = await fetchReactionsOn(activities.map((a) => a.id));
+    const totals = impactTotals(all, uId);
+    setRespectReceived(totals.respect);
+    setImpact(totals);
+
+    // Someone reacting within the last three days, to any of your activities.
+    const since = Date.now() - 3 * 86400000;
+    const recent = all
+      .filter((r) => r.user_id !== uId && new Date(r.created_at).getTime() >= since)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    if (recent.length === 0) { setRecognition(null); return; }
+
+    const targetId = recent[0].target_id;
+    const onTarget = recent.filter((r) => r.target_id === targetId);
+    const reactorIds = [...new Set(onTarget.map((r) => r.user_id))];
+    const { data: people } = await supabase.from('users').select('id, display_name, avatar_url').in('id', reactorIds.slice(0, 3));
+    const byId: Record<string, any> = {};
+    (people || []).forEach((p: any) => { byId[p.id] = p; });
+    const shown = reactorIds.slice(0, 3).filter((id) => byId[id]);
+    const activity = activities.find((a) => a.id === targetId);
+    setRecognition({
+      names: shown.slice(0, 1).map((id) => firstNameOnly(byId[id])),
+      faces: shown.map((id) => ({ id, url: byId[id].avatar_url || null, initial: (firstNameOnly(byId[id])[0] || '?').toUpperCase() })),
+      others: Math.max(0, reactorIds.length - 1),
+      inspiredOnly: onTarget.every((r) => r.emoji === 'inspired'),
+      activityType: activity?.activity_type ?? null,
+    });
+  }
+
+  async function loadAllData() {
     const { data: { user } } = await getAuthUser();
     if (!user) return;
 
@@ -549,6 +893,23 @@ export default function HomeScreen() {
       supabase.from('users').select('avatar_url').eq('id', uId).single(),
       supabase.from('goals').select('*').eq('user_id', uId),
     ]);
+
+    // The season ends at midnight on 1 January where the person is, and the
+    // server's end-of-season snapshot needs to know where that is. The column
+    // is write-only to the app (it would reveal roughly where someone lives),
+    // so the device remembers what it last sent and writes only on a change.
+    // Never awaited: a failure here must not hold up Home.
+    const tz = deviceTimeZone();
+    if (tz) {
+      const key = `rival.tz.${uId}`;
+      let sent: string | null = null;
+      try { sent = globalThis.localStorage?.getItem(key) ?? null; } catch {}
+      if (sent !== tz) {
+        supabase.from('users').update({ timezone: tz }).eq('id', uId).then(({ error }) => {
+          if (!error) { try { globalThis.localStorage?.setItem(key, tz); } catch {} }
+        }, () => {});
+      }
+    }
 
     setStravaConnected(!!stravaRes.data);
     setNextRace(raceRes.data ?? null);
@@ -574,6 +935,21 @@ export default function HomeScreen() {
     const seasonStart = new Date(getSeasonStartISO());
     const seasonEffort = activities.filter(a => new Date(a.started_at) >= seasonStart).reduce((s, a) => s + (a.effort_score || 0), 0);
     setRankName(getLevel(seasonEffort).name);
+    setSeasonEffortTotal(seasonEffort);
+
+    const legacyWeekStart = getMondayOfWeek(new Date());
+    const thisWeek = activities.filter(a => new Date(a.started_at) >= legacyWeekStart);
+    setLegacyWeek({
+      effort: Math.round(thisWeek.reduce((s, a) => s + (a.effort_score || 0), 0)),
+      count: thisWeek.length,
+      km: Math.round(thisWeek.reduce((s, a) => s + (a.distance_meters || 0), 0) / 1000),
+      elevM: Math.round(thisWeek.reduce((s, a) => s + (a.elevation_meters || 0), 0)),
+    });
+    const latest = activities.reduce<any>((best, a) => (!best || a.started_at > best.started_at ? a : best), null);
+    setLastActivity(latest ? { type: latest.activity_type ?? null, startedAt: latest.started_at } : null);
+
+    // Recognition runs alongside the rest of Home rather than holding it up.
+    loadRecognition(uId, activities).catch(() => {});
 
     // Featured goal: the ACTIVE goal nearest its deadline (tie-break: most
     // complete). One goal on the dashboard, deliberately — Ricky's call:
@@ -603,7 +979,7 @@ export default function HomeScreen() {
       setFeaturedGoal({
         id: top.goal.id,
         title: featuredGoalTitle(top.goal),
-        activityLabel: top.goal.goal_type === 'gym_sessions' ? 'Gym Sessions' : (top.goal.activity_filter ?? 'All Activities'),
+        activityLabel: top.goal.goal_type === 'gym_sessions' ? 'Gym activities' : (top.goal.activity_filter ?? 'All Activities'),
         progress: useMeters ? Math.round(top.progress * 1000) : top.progress,
         target: useMeters ? Math.round(top.goal.target_value * 1000) : top.goal.target_value,
         unit: useMeters ? 'm' : unit,
@@ -763,9 +1139,14 @@ export default function HomeScreen() {
           leaders.push({ leagueId: league.id, teamName: formatTeamName(league.name), daysRemaining, standings });
         }
       }
-      // Most-active team first, but never lead with an empty board when a
-      // team has real movement to show.
-      leaders.sort((a, b) => Number(b.standings.length > 0) - Number(a.standings.length > 0));
+      // Lead with the board that has the most people on it this week — a
+      // podium with teammates on it is the story, a solo board is just you.
+      // Then the team with the most members, so when nobody else has scored
+      // yet the real team still comes before a team of one. The sort is
+      // stable, so remaining ties keep the most-active-first order.
+      const memberCount = (id: string) => (memberIdsByLeague[id] || []).length;
+      leaders.sort((a, b) =>
+        b.standings.length - a.standings.length || memberCount(b.leagueId) - memberCount(a.leagueId));
       setWeeklyLeaders(leaders);
     } else {
       setWeeklyLeaders([]);
@@ -831,6 +1212,7 @@ export default function HomeScreen() {
                   number — a single string in the serif italic style rendered
                   "h"/"m" as oversized swash letters welded onto the digits
                   instead of reading as units. */}
+              {!loaded ? <SkeletonBar width={72} height={18} style={{ marginTop: 5 }} /> : (
               <Text numberOfLines={1}>
                 {heroHours > 0 && (
                   <>
@@ -841,6 +1223,7 @@ export default function HomeScreen() {
                 <Text style={styles.mTimeEarnedValue}>{heroMins}</Text>
                 <Text style={styles.mTimeEarnedUnit}>m</Text>
               </Text>
+              )}
             </View>
           ) : undefined}
         />
@@ -858,7 +1241,9 @@ export default function HomeScreen() {
         >
           {pullIndicator}
 
-          {mobile ? (
+          {mobile && !loaded ? (
+            <MobileHomeSkeleton />
+          ) : mobile ? (
             <>
               {/* Weekly Leader podium — swipeable across every team you're in
                   (Instagram-style: drag either direction, snaps to the next
@@ -915,6 +1300,15 @@ export default function HomeScreen() {
                         </View>
                       ))}
                     </ScrollView>
+                    {/* One dot per team, like the photo dots in the activity
+                        viewer. The current one stretches into a short pill and
+                        slides as you swipe, so the count and your place in it
+                        are both readable at a glance. */}
+                    <View style={styles.mLeaderDots}>
+                      {weeklyLeaders.map((leader, i) => (
+                        <View key={leader.leagueId} style={[styles.mLeaderDot, i === leaderCardIndex && styles.mLeaderDotActive]} />
+                      ))}
+                    </View>
                     {/* Swipe affordance — nothing else on this card hints that
                         it pages across teams, so a first-time user with more
                         than one team never discovers the other boards. Sits
@@ -950,20 +1344,127 @@ export default function HomeScreen() {
 
               {/* Add Activity */}
               <RivalButton
-                label="Add Activity"
+                label="Add activity"
                 onPress={() => router.push('/add-workout')}
                 style={[styles.addWorkoutPill, styles.mAddActivityOverride]}
                 labelStyle={styles.mAddActivityLabel}
               />
 
+              {/* Recognition — one line, only when someone has reacted to one
+                  of your activities in the last three days. The detail lives
+                  on the activity itself. */}
+              {recognition && (
+                <TouchableOpacity style={styles.mRecognition} activeOpacity={0.7} onPress={() => router.push('/my-activities')}>
+                  <View style={styles.mRecognitionFaces}>
+                    {recognition.faces.map((f, i) => (
+                      <View key={f.id} style={[styles.mRecognitionFace, i > 0 && { marginLeft: -9 }]}>
+                        {f.url
+                          ? <Image source={{ uri: f.url }} style={styles.mRecognitionFaceImg} />
+                          : <Text style={styles.mRecognitionInitial}>{f.initial}</Text>}
+                      </View>
+                    ))}
+                  </View>
+                  <Text style={styles.mRecognitionText} numberOfLines={2}>
+                    <Text style={styles.mRecognitionName}>
+                      {recognition.names[0]}{recognition.others > 0 ? ` and ${recognition.others} ${recognition.others === 1 ? 'other' : 'others'}` : ''}
+                    </Text>
+                    {recognition.inspiredOnly
+                      ? ` ${recognition.others > 0 ? 'were' : 'was'} Inspired by your ${activityShortName(recognition.activityType)}`
+                      : ` gave Respect to your ${activityShortName(recognition.activityType)}`}
+                  </Text>
+                  <RivalIcon name="chevronRight" size={18} color={RivalColors.accentText} />
+                </TouchableOpacity>
+              )}
+
+              {/* Today — sits with the day's actions, just under Add activity,
+                  so Legacy below it is purely lifetime. */}
+              <View style={[styles.mLegacyStatBox, styles.mTodayRow]}>
+                {/* A quiet day shows the last session rather than "+0" —
+                    the same information, without reading as an empty score. */}
+                <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
+                  {todayEffort > 0 || !lastActivity ? (
+                    <>
+                      <RivalIcon name="bolt" size={16} color={RivalColors.accentFill} />
+                      <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueLg]}>
+                        <Text style={{ position: 'relative', top: 0, left: 1 }}>+</Text>
+                        <Text style={{ marginLeft: 3 }}>{Math.round(todayEffort)}</Text>
+                      </Text>
+                      <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>Effort today</Text>
+                    </>
+                  ) : (
+                    <>
+                      <RivalIcon name={activityIconName(lastActivity.type)} size={16} color={RivalColors.accentFill} />
+                      <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueSerif]} numberOfLines={1}>{activityShortName(lastActivity.type)}</Text>
+                      <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]} numberOfLines={1}>Last · {relativeDayLabel(lastActivity.startedAt)}</Text>
+                    </>
+                  )}
+                </View>
+                <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
+                  <RivalIcon name="doubleChevronUp" size={16} color="#FFD700" />
+                  <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueGold]} numberOfLines={1}>{rankName || '—'}</Text>
+                  <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>{seasonYear} rank</Text>
+                  <Text style={styles.mRankDaysLeft}>{seasonDaysLeft === 1 ? '1 day left' : `${seasonDaysLeft} days left`}</Text>
+                </View>
+                <View style={styles.mLegacyStatCell}>
+                  <RivalIcon name="fire" size={16} color={RivalColors.accentFill} />
+                  {weeklyStreak > 0 ? (
+                    <>
+                      <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueLg]}>{weeklyStreak}</Text>
+                      <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>Week streak</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueSerif, styles.mLegacyStatValueSerifSm]} numberOfLines={1} adjustsFontSizeToFit>Next activity</Text>
+                      <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>Starts streak</Text>
+                    </>
+                  )}
+                </View>
+              </View>
+
+              {/* The year, made visible. In December, a countdown to the rank
+                  reset with the Effort still needed for the next rank; through
+                  January, last year's review. Neither shows the rest of the year. */}
+              {seasonDaysLeft <= 30 && (() => {
+                const lvl = getLevel(seasonEffortTotal);
+                const nextLvl = LEVELS.find((l) => l.level === lvl.level + 1);
+                const p = xpProgressInLevel(seasonEffortTotal);
+                return (
+                  <View style={styles.mYearCard}>
+                    <MHeading
+                      title={seasonDaysLeft <= 1 ? `The last day of ${seasonYear}` : `${seasonYear} closes in ${seasonDaysLeft} days`}
+                      subtitle={nextLvl ? `${Math.ceil(p.needed - p.current).toLocaleString()} Effort to ${nextLvl.name}` : `${lvl.name} · the top rank`}
+                    />
+                    <View style={styles.mYearTrack}>
+                      <View style={[styles.mYearFill, { width: `${Math.max(3, Math.round(Math.min(1, p.pct) * 100))}%` }]} />
+                    </View>
+                    <Text style={styles.mYearNote}>Rank resets 1 January. Lifetime totals never reset.</Text>
+                    <TouchableOpacity onPress={() => router.push({ pathname: '/year-review', params: { year: String(seasonYear) } })}>
+                      <Text style={[styles.mFocusViewLink, { textAlign: 'center' }]}>View {seasonYear} so far →</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })()}
+              {new Date().getMonth() === 0 && (
+                <TouchableOpacity
+                  style={styles.mYearCard}
+                  activeOpacity={0.85}
+                  onPress={() => router.push({ pathname: '/year-review', params: { year: String(seasonYear - 1) } })}
+                >
+                  <MHeading title={`Your ${seasonYear - 1}`} subtitle="Year in review" />
+                  <Text style={styles.mYearNote}>Final rank, total Effort, and every activity from the year.</Text>
+                  <Text style={[styles.mFocusViewLink, { textAlign: 'center' }]}>View the year →</Text>
+                </TouchableOpacity>
+              )}
+
               {/* Focus — no card chrome, same as the Team Challenge hero in
                   team-hub.tsx: content sits directly on the page background
                   rather than boxed in its own tinted card. */}
               <View style={styles.mFocusFree}>
-                <Text style={styles.mFocusKicker}>FOCUS</Text>
                 {featuredGoal ? (
                   <>
-                    <Text style={styles.mFocusTitle}>{featuredGoal.activityLabel}</Text>
+                    <View style={styles.mFocusHead}>
+                      <MHeading title={featuredGoal.activityLabel} subtitle="Focus" icon="target" />
+                    </View>
                     {/* Same ring used by the Team Challenge card (team-hub.tsx) —
                         Ricky asked for this card to match it. RivalChallengeRing
                         decides decimal-vs-whole-number display from the
@@ -977,21 +1478,31 @@ export default function HomeScreen() {
                       size={200}
                       thickness={14}
                     />
+                    {/* Two figures in the brand serif over spaced caps, split
+                        by a hairline — the same voice as the section headings,
+                        instead of a line of small body text. */}
                     <View style={styles.mFocusRingMetaRow}>
-                      <Text style={styles.mFocusRingMeta}><Text style={styles.mFocusRingMetaBold}>{Math.round(featuredGoal.pct * 100)}%</Text> complete</Text>
-                      <Text style={styles.mFocusRingMeta}>
-                        <Text style={styles.mFocusRingMetaBold}>{featuredGoal.daysLeft}</Text> {featuredGoal.daysLeft === 1 ? 'day' : 'days'} left
-                      </Text>
+                      <View style={styles.mFocusMetaCell}>
+                        <Text style={styles.mFocusMetaNumber}>{Math.round(featuredGoal.pct * 100)}%</Text>
+                        <Text style={styles.mFocusMetaLabel}>Complete</Text>
+                      </View>
+                      <View style={styles.mFocusMetaDivider} />
+                      <View style={styles.mFocusMetaCell}>
+                        <Text style={styles.mFocusMetaNumber}>{featuredGoal.daysLeft}</Text>
+                        <Text style={styles.mFocusMetaLabel}>{featuredGoal.daysLeft === 1 ? 'Day left' : 'Days left'}</Text>
+                      </View>
                     </View>
                     <TouchableOpacity onPress={() => router.push('/goals')}>
-                      <Text style={styles.mFocusViewLink}>View Focus →</Text>
+                      <Text style={styles.mFocusViewLink}>View focus →</Text>
                     </TouchableOpacity>
                   </>
                 ) : (
                   <>
-                    <Text style={styles.mFocusEmptyTitle}>Choose something worth chasing.</Text>
+                    <View style={styles.mFocusEmptyHead}>
+                      <MHeading title="Choose something worth chasing." subtitle="Focus" icon="target" />
+                    </View>
                     <TouchableOpacity onPress={() => router.push('/goals')}>
-                      <Text style={styles.mFocusViewLink}>Set Focus →</Text>
+                      <Text style={styles.mFocusViewLink}>Set focus →</Text>
                     </TouchableOpacity>
                   </>
                 )}
@@ -1008,63 +1519,119 @@ export default function HomeScreen() {
                   style={styles.mLegacySmoke}
                   resizeMode="cover"
                 />
-                <View style={styles.mLegacyStatBox}>
-                  <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
-                    <RivalIcon name="bolt" size={16} color={RivalColors.accentFill} />
-                    <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueLg]}>
-                      <Text style={{ position: 'relative', top: 0, left: 1 }}>+</Text>
-                      <Text style={{ marginLeft: 3 }}>{Math.round(todayEffort)}</Text>
-                    </Text>
-                    <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>Effort Today</Text>
-                  </View>
-                  <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
-                    <RivalIcon name="doubleChevronUp" size={16} color="#FFD700" />
-                    <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueGold]} numberOfLines={1}>{rankName || '—'}</Text>
-                    <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>Rank</Text>
-                  </View>
-                  <View style={styles.mLegacyStatCell}>
-                    <RivalIcon name="fire" size={16} color={RivalColors.accentFill} />
-                    <Text style={[styles.mLegacyStatValue, styles.mLegacyStatValueLg]}>{weeklyStreak}</Text>
-                    <Text style={[styles.mLegacyStatLabel, styles.mLegacyStatLabelLg]}>Week Streak</Text>
-                  </View>
+                <View style={{ marginTop: 8 }}>
+                  <MHeading title="Legacy" subtitle="Lifetime of Effort" />
                 </View>
 
-                <View style={{ alignItems: 'center', marginTop: 24 }}>
-                  <Text style={styles.mLegacyKicker}>LEGACY</Text>
-                  <Text style={styles.mLegacySubtitle}>Everything you've earned</Text>
-                </View>
-
-                <View style={{ alignItems: 'center', marginTop: 20 }}>
-                  <Text style={styles.mLegacyHeroNumber}>{Math.round(lifetimeXp).toLocaleString()}</Text>
+                <View style={{ alignItems: 'center', marginTop: 26 }}>
+                  <CountUpText value={Math.round(lifetimeXp)} style={styles.mLegacyHeroNumber} />
                   <Text style={styles.mLegacyHeroLabel}>Total Effort</Text>
+                  {legacyWeek.effort > 0 && (
+                    <View style={styles.mLegacyWeekChip}>
+                      <RivalIcon name="trendUp" size={13} color={RivalColors.accentText} />
+                      <Text style={styles.mLegacyWeekChipText}>+{legacyWeek.effort.toLocaleString()} this week</Text>
+                    </View>
+                  )}
                 </View>
 
-                <View style={styles.mLegacyDivider} />
+                {(() => {
+                  const m = nextMilestone(totalDistanceKm, lifetimeActivityCount, totalElevationM, seasonEffortTotal, respectReceived);
+                  return (
+                    <View style={styles.mMilestone}>
+                      <View style={styles.mMilestoneHead}>
+                        <Text style={styles.mMilestoneLabel}>Next milestone</Text>
+                        <Text style={styles.mMilestoneToGo}>{m.toGo}</Text>
+                      </View>
+                      <Text style={styles.mMilestoneTitle}>{m.title}</Text>
+                      <View style={styles.mMilestoneTrack}>
+                        <View style={[styles.mMilestoneFill, { width: `${Math.max(3, Math.min(100, Math.round(m.pct * 100)))}%` }]} />
+                      </View>
+                    </View>
+                  );
+                })()}
 
-                <View style={styles.mLegacyStatBox}>
-                  <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
-                    <RivalIcon name="fire" size={16} color={RivalColors.accentFill} />
-                    <Text style={styles.mLegacyStatValue}>{lifetimeActivityCount.toLocaleString()}</Text>
-                    <Text style={styles.mLegacyStatLabel}>Activities</Text>
+                {/* Two pages you can swipe between: the training record, then
+                    how other people have recognised it. Impact gets its place on
+                    Home without adding height. The second page appears once
+                    someone has given you Respect or been Inspired. */}
+                <View
+                  style={[styles.mLegacyStatBox, styles.mLegacyCarouselBox]}
+                  onLayout={(e) => setLegacyBoxWidth(Math.round(e.nativeEvent.layout.width) - 2)}
+                >
+                  <ScrollView
+                    ref={legacyScrollRef}
+                    horizontal
+                    pagingEnabled
+                    scrollEnabled={hasImpact}
+                    showsHorizontalScrollIndicator={false}
+                    scrollEventThrottle={16}
+                    onScroll={(e) => {
+                      if (!legacyBoxWidth) return;
+                      const idx = Math.round(e.nativeEvent.contentOffset.x / legacyBoxWidth);
+                      setLegacyPage((cur) => (cur === idx ? cur : idx));
+                    }}
+                  >
+                  <View style={[styles.mLegacyPage, legacyBoxWidth ? { width: legacyBoxWidth } : null]}>
+                      <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
+                        <RivalIcon name="fire" size={16} color={RivalColors.accentFill} />
+                        <Text style={styles.mLegacyStatValue}>{lifetimeActivityCount.toLocaleString()}</Text>
+                        {legacyWeek.count > 0 && <Text style={styles.mLegacyStatGain}>{`+${legacyWeek.count} this week`}</Text>}
+                        <Text style={styles.mLegacyStatLabel}>Activities</Text>
+                      </View>
+                      <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
+                        <RivalIcon name="distance" size={16} color={RivalColors.accentFill} />
+                        <Text style={styles.mLegacyStatValue}>{totalDistanceKm.toLocaleString()} <Text style={styles.mLegacyStatUnit}>km</Text></Text>
+                        {legacyWeek.count > 0 && <Text style={styles.mLegacyStatGain}>{`+${legacyWeek.km.toLocaleString()} km`}</Text>}
+                        <Text style={styles.mLegacyStatLabel}>Distance</Text>
+                      </View>
+                      <View style={styles.mLegacyStatCell}>
+                        <RivalIcon name="elevation" size={16} color={RivalColors.accentFill} />
+                        <Text style={styles.mLegacyStatValue}>{totalElevationM.toLocaleString()} <Text style={styles.mLegacyStatUnit}>m</Text></Text>
+                        {legacyWeek.count > 0 && <Text style={styles.mLegacyStatGain}>{`+${legacyWeek.elevM.toLocaleString()} m`}</Text>}
+                        <Text style={styles.mLegacyStatLabel}>Elevation</Text>
+                      </View>
                   </View>
-                  <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
-                    <RivalIcon name="distance" size={16} color={RivalColors.accentFill} />
-                    <Text style={styles.mLegacyStatValue}>{totalDistanceKm.toLocaleString()} <Text style={styles.mLegacyStatUnit}>km</Text></Text>
-                    <Text style={styles.mLegacyStatLabel}>Distance</Text>
-                  </View>
-                  <View style={styles.mLegacyStatCell}>
-                    <RivalIcon name="elevation" size={16} color={RivalColors.accentFill} />
-                    <Text style={styles.mLegacyStatValue}>{totalElevationM.toLocaleString()} <Text style={styles.mLegacyStatUnit}>m</Text></Text>
-                    <Text style={styles.mLegacyStatLabel}>Elevation</Text>
-                  </View>
+                  {hasImpact && (
+                    <View style={[styles.mLegacyPage, legacyBoxWidth ? { width: legacyBoxWidth } : null]}>
+                      <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
+                        <RivalIcon name="respect" size={16} color={RivalColors.accentFill} />
+                        <Text style={styles.mLegacyStatValue}>{impact.respect.toLocaleString()}</Text>
+                        <Text style={styles.mLegacyStatLabel}>Respect</Text>
+                      </View>
+                      <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
+                        <RivalIcon name="impact" size={16} color={RivalColors.accentFill} />
+                        <Text style={styles.mLegacyStatValue}>{impact.inspired.toLocaleString()}</Text>
+                        <Text style={styles.mLegacyStatLabel}>Inspired</Text>
+                      </View>
+                      <View style={styles.mLegacyStatCell}>
+                        <RivalIcon name="groups" size={16} color={RivalColors.accentFill} />
+                        <Text style={styles.mLegacyStatValue}>{impact.people.toLocaleString()}</Text>
+                        <Text style={styles.mLegacyStatLabel}>People</Text>
+                      </View>
+                    </View>
+                  )}
+                  </ScrollView>
                 </View>
+                {hasImpact && (
+                  <View style={[styles.mLeaderDots, { marginTop: 12 }]}>
+                    {[0, 1].map((i) => (
+                      <TouchableOpacity
+                        key={i}
+                        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                        accessibilityLabel={i === 0 ? 'Show training totals' : 'Show recognition'}
+                        onPress={() => { setLegacyPage(i); legacyScrollRef.current?.scrollTo({ x: i * legacyBoxWidth, animated: true }); }}
+                      >
+                        <View style={[styles.mLeaderDot, i === legacyPage && styles.mLeaderDotActive]} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
 
-                <TouchableOpacity onPress={() => router.push('/stats')} style={{ alignSelf: 'center', marginTop: 16 }}>
-                  <Text style={styles.mLegacyViewAllLink}>View all legacy →</Text>
-                </TouchableOpacity>
               </View>
 
-              {/* Next Event */}
+              {/* Next Event — only when a race is booked; races are added from
+                  the Races page, so an empty card here was just taking room. */}
+              {nextRace && (
               <RivalCard style={styles.mNextEventCard}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.mNextEventKicker}>NEXT EVENT</Text>
@@ -1076,7 +1643,7 @@ export default function HomeScreen() {
                   ) : (
                     <TouchableOpacity onPress={() => router.push('/races?add=true')}>
                       <Text style={styles.mNextEventEmptyLine}>No race scheduled</Text>
-                      <Text style={styles.mFocusViewLink}>Add Race →</Text>
+                      <Text style={styles.mFocusViewLink}>Add race →</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -1087,6 +1654,7 @@ export default function HomeScreen() {
                   </View>
                 )}
               </RivalCard>
+              )}
             </>
           ) : (
           <>
@@ -1108,13 +1676,12 @@ export default function HomeScreen() {
               <Text style={[styles.heroValueUnit, { fontSize: heroValueFontSize(heroTimeText, heroCardAvailableWidth) * 0.42 }]}>m</Text>
             </Text>
             <View style={{ marginTop: -10, alignItems: 'center' }}>
-              <Text style={styles.heroSub}>Every minute in here is yours.</Text>
-              <Text style={styles.heroSub}>You earned it.</Text>
+              <Text style={styles.heroSub}>Every minute here is yours.</Text>
             </View>
           </RivalCard>
 
           <RivalButton
-            label="Add Activity"
+            label="Add activity"
             onPress={() => router.push('/add-workout')}
             style={[styles.addWorkoutPill, addActivityHovered && styles.gridCardHovered]}
             {...(Platform.OS === 'web'
@@ -1128,7 +1695,7 @@ export default function HomeScreen() {
               <Text style={styles.bannerIcon}>⏳</Text>
               <View style={{ flex: 1 }}>
                 <Text style={styles.bannerTitle}>{seasonDaysLeft} days left in the {seasonYear} season</Text>
-                <Text style={styles.bannerSub}>Push your rank now — Effort resets Jan 1</Text>
+                <Text style={styles.bannerSub}>Push your rank now, Effort resets Jan 1</Text>
               </View>
             </TouchableOpacity>
           )}
@@ -1328,7 +1895,7 @@ export default function HomeScreen() {
                         >
                           {leader.points}
                         </Text>{' '}
-                        Effort — can you catch them?
+                        Effort this week
                       </Text>
 
                       <View style={{ flex: 1 }} />
@@ -1523,7 +2090,7 @@ export default function HomeScreen() {
                   <View style={{ flex: 1 }} />
                   <View style={[styles.focusEmptyLinkRow, styles.focusEmptyLinkBottom]}>
                     <TouchableOpacity onPress={() => router.push('/create-league')}>
-                      <Text style={styles.focusEmptyLink}>Create Your Team</Text>
+                      <Text style={styles.focusEmptyLink}>Create team</Text>
                     </TouchableOpacity>
                     <Text style={styles.focusEmptyLink}> →</Text>
                   </View>
@@ -1697,7 +2264,7 @@ export default function HomeScreen() {
             <TouchableOpacity style={styles.stravaCard} onPress={handleConnectStrava}>
               <View>
                 <Text style={styles.stravaCardTitle}>Connect Strava</Text>
-                <Text style={styles.stravaCardSub}>Link your account to earn Effort from workouts</Text>
+                <Text style={styles.stravaCardSub}>Link an account to earn Effort from synced workouts.</Text>
               </View>
               <Text style={styles.stravaCardArrow}>→</Text>
             </TouchableOpacity>
@@ -1929,16 +2496,22 @@ const styles = StyleSheet.create({
   // card retained so spacing to the sections above/below doesn't jump.
   // Same warm radial treatment as mLegacySection, but off to one side — a
   mFocusFree: { paddingTop: 20, paddingBottom: 24, paddingHorizontal: 16, alignItems: 'center' },
-  mFocusKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 2, color: 'rgba(255,181,158,0.65)' },
-  mFocusTitle: { ...RivalType.bodyMd, fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: RivalColors.textPrimary, marginTop: 6, marginBottom: 14 },
+  mFocusHead: { alignSelf: 'stretch', marginBottom: 18 },
+  mFocusEmptyHead: { alignSelf: 'stretch', marginTop: 4, marginBottom: 14 },
   // Ring meta row ("43% complete   129 days left") — same styling as
   // team-hub.tsx's ringMetaRow/ringMeta/ringMetaBold, this card's own copy
   // since that one is scoped private to team-hub.tsx.
-  mFocusRingMetaRow: { flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 14, marginBottom: 12 },
-  mFocusRingMeta: { fontFamily: RivalFontFamily, fontSize: 13, color: 'rgba(255,255,255,0.75)' },
-  mFocusRingMetaBold: { fontFamily: RivalFontFamily, fontWeight: '800', color: '#fff' },
-  mFocusViewLink: { fontFamily: RivalFontFamily, fontSize: 13, fontWeight: '500', color: RivalColors.textSecondary, marginTop: 8 },
-  mFocusEmptyTitle: { ...RivalType.bodyMd, fontSize: 15, color: RivalColors.textPrimary, textAlign: 'center', marginTop: 24, marginBottom: 12 },
+  mFocusRingMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 28, marginTop: 18, marginBottom: 14 },
+  mFocusMetaCell: { alignItems: 'center', minWidth: 84 },
+  mFocusMetaNumber: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 28, fontWeight: '700', lineHeight: 32, color: RivalColors.accentText },
+  mFocusMetaLabel: { fontFamily: RivalFontFamily, fontSize: 10.5, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase', color: 'rgba(255,181,158,0.75)', marginTop: 4 },
+  mFocusMetaDivider: {
+    width: 1, height: 38,
+    ...(Platform.OS === 'web'
+      ? ({ backgroundImage: 'linear-gradient(180deg, rgba(255,181,158,0) 0%, rgba(255,181,158,0.45) 50%, rgba(255,181,158,0) 100%)' } as any)
+      : { backgroundColor: 'rgba(255,181,158,0.3)' }),
+  },
+  mFocusViewLink: { fontFamily: RivalFontFamily, fontSize: 13.5, fontWeight: '700', color: RivalColors.accentText, marginTop: 8 },
 
   // Weekly Leader podium
   // Layers the Legacy section's warm radial glow (CSS supports comma-separated
@@ -1964,8 +2537,7 @@ const styles = StyleSheet.create({
   },
   mLeaderArrowLeft: { left: 2 },
   mLeaderArrowRight: { right: 2 },
-  mLeaderKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 2, color: 'rgba(255,181,158,0.65)' },
-  mLeaderTeamName: { ...RivalType.bodyMd, fontSize: 13, fontWeight: '500', color: RivalColors.textPrimary, marginTop: 6, marginBottom: 20 },
+  mLeaderHead: { alignSelf: 'stretch', marginTop: 4, marginBottom: 22 },
   // Capped at the mockup's own reference width — without this, a wide
   // "mobile" viewport (the mobile branch covers anything under 840px, which
   // includes tablets) stretches the flex:1 columns wide while pillarHeight
@@ -2082,6 +2654,13 @@ const styles = StyleSheet.create({
   mPodiumAvatar: { borderWidth: 2, backgroundColor: '#332e2a', alignItems: 'center', justifyContent: 'center' },
   // Floats above the avatar without pushing it down — same technique as the
   // mockup's absolutely-positioned crown (`top` offset set inline per avatar size).
+  mPodiumSheenClip: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' },
+  mPodiumSheen: {
+    position: 'absolute', top: 0, bottom: 0, width: '45%',
+    ...(Platform.OS === 'web'
+      ? ({ backgroundImage: 'linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0) 100%)' } as any)
+      : {}),
+  },
   mPodiumCrownWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   // flexShrink:0 matters here — a flex child with overflow:hidden (which
   // numberOfLines={1} sets under the hood) defaults to a min-height of 0 in
@@ -2102,21 +2681,33 @@ const styles = StyleSheet.create({
   // sibling that extends 19px below the pillar row) plus real breathing
   // room — the platform doesn't affect layout since it's out of flow, so
   // this has to be sized by hand rather than a plain small gap.
-  mPodiumMetaCapsule: {
-    alignSelf: 'center', marginTop: 19, paddingTop: 5, paddingBottom: 8, paddingHorizontal: 20, borderRadius: RivalRadius.lg,
-    alignItems: 'flex-start', backgroundColor: 'rgba(19,19,19,0.55)', borderWidth: 1, borderColor: RivalColors.surfaceBright,
+  mStatus: { alignItems: 'center', marginTop: 22, gap: 10 },
+  mHeading: { alignItems: 'center', gap: 10, alignSelf: 'stretch', paddingHorizontal: 8 },
+  mStatusHeadline: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 22, fontWeight: '700', color: '#fff', textAlign: 'center', letterSpacing: 0.2 },
+  mStatusBeside: { position: 'relative', top: 4 },
+  // Baseline-aligned, then the words dropped a few pixels. Georgia only has
+  // old-style numerals — 3, 4, 5, 7 and 9 hang below the line like a
+  // descender (there is no lining-figure alternative to switch to) — so on a
+  // shared baseline the words sat level with the top of a "7" and read as
+  // floating. Lowered, they sit across the middle of the hanging digits, which
+  // are most of them; short digits like 1, 2 and 0 end up within a pixel.
+  mStatusLine: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'center', gap: 8, flexWrap: 'wrap' },
+  mStatusNumber: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 34, fontWeight: '700' },
+  mStatusCountdown: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  mStatusCountdownText: { fontFamily: RivalFontFamily, fontSize: 10.5, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase', color: 'rgba(255,181,158,0.75)' },
+  mStatusRule: { width: 34, height: 1 },
+  mStatusRuleLeft: Platform.OS === 'web'
+    ? ({ backgroundImage: 'linear-gradient(90deg, rgba(255,181,158,0) 0%, rgba(255,181,158,0.5) 100%)' } as any)
+    : { backgroundColor: 'rgba(255,181,158,0.3)' },
+  mStatusRuleRight: Platform.OS === 'web'
+    ? ({ backgroundImage: 'linear-gradient(90deg, rgba(255,181,158,0.5) 0%, rgba(255,181,158,0) 100%)' } as any)
+    : { backgroundColor: 'rgba(255,181,158,0.3)' },
+  mLeaderDots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 22 },
+  mLeaderDot: {
+    width: 6, height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.25)',
+    ...(Platform.OS === 'web' ? ({ transition: 'width 220ms ease, background-color 220ms ease' } as any) : {}),
   },
-  mPodiumOutsideRow: { fontFamily: RivalFontFamily, fontSize: 15, fontWeight: '700', color: '#FFFFFF', textAlign: 'left', letterSpacing: 0.5 },
-  // No offsets in the base style. It used to carry marginTop:-18/marginLeft:46
-  // to tuck "Ends tomorrow" under the word "Behind" on the line above — but
-  // that line only exists when there IS a rank story. With no story (you're not
-  // on the board, or you're alone on it) the pull-up dragged this text clear out
-  // of its own capsule, leaving the label floating over the podium's stage glow
-  // above an empty pill. The tuck now lives on the branch that actually has a
-  // line to tuck under.
-  mLeaderFooterMeta: { fontFamily: RivalFontFamily, fontSize: 11, color: RivalColors.textSecondary },
-  mLeaderEmptyTitle: { fontFamily: RivalFontFamily, fontSize: 14, fontWeight: '500', letterSpacing: 3, color: RivalColors.textPrimary, textAlign: 'center' },
-  mLeaderEmptySub: { fontFamily: RivalFontFamily, fontSize: 11, fontWeight: '500', color: '#ffcabb', letterSpacing: 1, marginTop: 0, textAlign: 'center' },
+  mLeaderDotActive: { width: 18, backgroundColor: RivalColors.accentText },
 
   // Next Event card
   mNextEventCard: {
@@ -2125,14 +2716,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#241c17',
     ...(Platform.OS === 'web' ? { backgroundImage: 'linear-gradient(135deg, #1c1a19 0%, #241c17 100%)' } as any : {}),
   },
-  mNextEventKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 2, color: 'rgba(255,181,158,0.65)' },
-  mNextEventName: { ...RivalType.bodyMd, fontSize: 15, fontWeight: '700', color: RivalColors.textPrimary, marginTop: 4 },
-  mNextEventDate: { fontFamily: RivalFontFamily, fontSize: 12, color: RivalColors.textPrimary, marginTop: 2 },
+  mNextEventKicker: { fontFamily: RivalFontFamily, fontSize: 10.5, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase', color: 'rgba(255,181,158,0.75)' },
+  mNextEventName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 20, fontWeight: '700', lineHeight: 26, color: RivalColors.textPrimary, marginTop: 6 },
+  mNextEventDate: { fontFamily: RivalFontFamily, fontSize: 13, color: 'rgba(255,255,255,0.6)', marginTop: 3 },
   mNextEventDaysNumber: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 30, fontWeight: '700', color: RivalColors.accentText, lineHeight: 30 },
   // Mockup's "DAYS" label has no explicit font-weight (regular, unlike the
   // bold orange kickers) — labelCaps defaults to 700, reset it here.
   mNextEventDaysLabel: { ...RivalType.labelCaps, fontSize: 10, fontWeight: '400', color: RivalColors.textSecondary, marginTop: 2 },
-  mNextEventEmptyLine: { fontFamily: RivalFontFamily, fontSize: 13, color: RivalColors.textSecondary, marginTop: 6, marginBottom: 6 },
+  mNextEventEmptyLine: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 18, fontWeight: '700', lineHeight: 24, color: RivalColors.textPrimary, marginTop: 6, marginBottom: 4 },
 
   // Add Activity override — mockup's accentText pill (not the default
   // accentFill primary), sized/padded/spaced to the mockup's exact spec
@@ -2141,17 +2732,17 @@ const styles = StyleSheet.create({
   // Negative marginTop pulls this up specifically closer to the Weekly
   // Leader card above it — content's own gap:20 is shared by every card on
   // this screen, so trim just this one gap here rather than globally.
-  mAddActivityOverride: { backgroundColor: RivalColors.accentText, borderWidth: 0, width: '80%', minWidth: 0, paddingHorizontal: 13, paddingVertical: 13, marginBottom: 16, marginTop: -43 },
+  mAddActivityOverride: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderWidth: 0, width: '80%', minWidth: 0, paddingHorizontal: 13, paddingVertical: 13, marginBottom: 16, marginTop: -43 },
   // The base label style's lineHeight:28 (sized for titleMd's 20px font)
   // survives unless reset here, padding the pill out ~10px taller than the
   // mockup's tightly-set 15px text.
-  mAddActivityLabel: { fontFamily: RivalFontFamily, fontSize: 15, fontWeight: '700', lineHeight: 18, color: RivalColors.onAccentFill },
+  mAddActivityLabel: { fontFamily: RivalFontFamily, fontSize: 15, fontWeight: '700', lineHeight: 18, color: RivalButtonColors.label(RivalColors.onAccentFill) },
 
   // Legacy borderless section
   // Mockup bleeds this section edge-to-edge (`margin:0 -16px` against its
   // 16px-padded parent) — the ScrollView content pads 24px, so cancel that.
   mLegacySection: {
-    marginHorizontal: -24, paddingTop: 20, paddingHorizontal: 16, paddingBottom: 16,
+    marginHorizontal: -24, paddingTop: 40, paddingHorizontal: 16, paddingBottom: 30,
     // Web: gradient-only, no flat backgroundColor underneath — a flat color
     // there would fill the whole rect uniformly and show as a hard edge
     // where the gradient itself has faded to transparent. Native has no
@@ -2160,9 +2751,9 @@ const styles = StyleSheet.create({
       ? { backgroundImage: 'radial-gradient(ellipse 90% 65% at 50% 55%, rgba(217,119,87,0.16) 0%, rgba(19,19,19,0) 75%)' } as any
       : { backgroundColor: 'rgba(217,119,87,0.05)' }),
   },
-  mLegacyStatBox: { flexDirection: 'row', backgroundColor: 'rgba(19,19,19,0.55)', borderWidth: 1, borderColor: RivalColors.surfaceBright, borderRadius: RivalRadius.lg, paddingVertical: 16 },
+  mLegacyStatBox: { flexDirection: 'row', backgroundColor: 'rgba(29,23,20,0.72)', borderWidth: 1, borderColor: 'rgba(255,209,190,0.10)', borderRadius: RivalRadius.lg, paddingVertical: 20 },
   mLegacyStatCell: { flex: 1, alignItems: 'center', paddingHorizontal: 4 },
-  mLegacyStatCellBorder: { borderRightWidth: 1, borderRightColor: 'rgba(50,50,50,0.5)' },
+  mLegacyStatCellBorder: { borderRightWidth: 1, borderRightColor: 'rgba(255,209,190,0.08)' },
   mLegacyStatIcon: { marginBottom: 8 },
   // Row 2 (Activities/Distance/Elevation) default size — mockup uses smaller
   // type here than row 1 (Effort Today/Rank/Week Streak), not one shared size.
@@ -2179,10 +2770,50 @@ const styles = StyleSheet.create({
   mLegacyStatUnit: { fontFamily: RivalFontFamily, fontSize: 9, color: RivalColors.textSecondary, fontWeight: '700' },
   // Mockup's small gray labels are regular weight, not bold — labelCaps
   // defaults to 700, so both label styles explicitly reset it to 400.
-  mLegacyStatLabel: { ...RivalType.labelCaps, fontSize: 9, fontWeight: '400', letterSpacing: 0.9, color: RivalColors.textSecondary, marginTop: 5 },
-  mLegacyStatLabelLg: { fontSize: 10, letterSpacing: 0.6 },
-  mLegacyKicker: { ...RivalType.labelCaps, fontSize: 11, letterSpacing: 3, color: RivalColors.accentFill },
-  mLegacySubtitle: { fontFamily: RivalFontFamily, fontSize: 13, color: RivalColors.textSecondary, marginTop: 4 },
+  mLegacyStatLabel: { ...RivalType.labelCaps, fontSize: 10, fontWeight: '700', letterSpacing: 1.2, color: 'rgba(255,255,255,0.55)', marginTop: 6 },
+  mLegacyStatLabelLg: { fontSize: 10.5, letterSpacing: 1 },
+  mLegacyStatValueSerif: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 17, lineHeight: 24, paddingHorizontal: 2 },
+  mSkel: { backgroundColor: 'rgba(255,209,190,0.08)' },
+  mSkelLeader: { gap: 0, minHeight: 360, justifyContent: 'flex-start' },
+  mSkelPodium: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, marginTop: 70 },
+  // Warm card fill, like the app's other cards — off the smoke backdrop the
+  // grey see-through box read as flat.
+  mRankDaysLeft: { fontFamily: RivalFontFamily, fontSize: 10.5, fontWeight: '600', color: RivalColors.accentText, marginTop: 3 },
+  mYearCard: {
+    marginTop: 14, marginHorizontal: -8, paddingVertical: 22, paddingHorizontal: 18, gap: 14,
+    backgroundColor: '#1d1714', borderWidth: 1, borderColor: 'rgba(255,209,190,0.10)', borderRadius: RivalRadius.lg,
+  },
+  mYearTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
+  mYearFill: { height: 6, borderRadius: 3, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient } as any,
+  mYearNote: { fontFamily: RivalFontFamily, fontSize: 12.5, lineHeight: 18, color: 'rgba(255,255,255,0.55)', textAlign: 'center' },
+  mRecognition: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 14, paddingHorizontal: 4 },
+  mRecognitionFaces: { flexDirection: 'row' },
+  mRecognitionFace: {
+    width: 30, height: 30, borderRadius: 15, overflow: 'hidden', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#3a2a22', borderWidth: 2, borderColor: '#110e0c',
+  },
+  mRecognitionFaceImg: { width: 30, height: 30 },
+  mRecognitionInitial: { fontFamily: RivalFontFamily, fontSize: 12, fontWeight: '800', color: RivalColors.accentText },
+  mRecognitionText: { flex: 1, fontFamily: RivalFontFamily, fontSize: 13.5, lineHeight: 19, color: 'rgba(255,255,255,0.7)' },
+  mRecognitionName: { fontWeight: '700', color: '#fff' },
+  mLegacyCarouselBox: { flexDirection: 'column', paddingVertical: 0, overflow: 'hidden' },
+  mLegacyPage: { flexDirection: 'row', paddingVertical: 20 },
+  mTodayRow: { marginTop: 14, marginHorizontal: -8, backgroundColor: '#1d1714', borderColor: 'rgba(255,209,190,0.10)' },
+  mLegacyStatValueSerifSm: { fontSize: 14.5, letterSpacing: -0.2 },
+  mLegacyStatGain: { fontFamily: RivalFontFamily, fontSize: 11, fontWeight: '600', color: RivalColors.accentText, marginTop: 2 },
+  mLegacyWeekChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 12,
+    paddingVertical: 4, paddingHorizontal: 11, borderRadius: 999,
+    borderWidth: 1, borderColor: 'rgba(255,181,158,0.3)', backgroundColor: 'rgba(255,181,158,0.06)',
+  },
+  mLegacyWeekChipText: { fontFamily: RivalFontFamily, fontSize: 12, fontWeight: '700', color: RivalColors.accentText },
+  mMilestone: { marginTop: 34, marginBottom: 28, marginHorizontal: 10 },
+  mMilestoneHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  mMilestoneLabel: { fontFamily: RivalFontFamily, fontSize: 10.5, fontWeight: '800', letterSpacing: 2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.55)' },
+  mMilestoneToGo: { fontFamily: RivalFontFamily, fontSize: 12, fontWeight: '700', color: RivalColors.accentText },
+  mMilestoneTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 18, fontWeight: '700', lineHeight: 24, color: '#fff', marginTop: 4, marginBottom: 10 },
+  mMilestoneTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
+  mMilestoneFill: { height: 6, borderRadius: 3, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient } as any,
   mLegacyHeroNumber: {
     fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 46, fontWeight: '700', color: RivalColors.accentFill,
     ...(Platform.OS === 'web' ? {
@@ -2190,7 +2821,7 @@ const styles = StyleSheet.create({
       backgroundClip: 'text', WebkitBackgroundClip: 'text', color: 'transparent',
     } as any : {}),
   },
-  mLegacyHeroLabel: { ...RivalType.labelCaps, fontSize: 10, letterSpacing: 2, color: RivalColors.accentFill },
+  mLegacyHeroLabel: { ...RivalType.labelCaps, fontSize: 11, fontWeight: '800', letterSpacing: 2, color: RivalColors.accentFill },
   mLegacyDivider: { width: 1, height: 56, alignSelf: 'center', backgroundColor: RivalColors.accentFill, opacity: 0.4, marginTop: 8, marginBottom: 6 },
   // Half the Legacy divider's length — leads the eye down toward the Add
   // Activity button below the empty-state card instead of just floating copy.
@@ -2206,8 +2837,24 @@ const styles = StyleSheet.create({
   // flex:1 has nothing to claim. It's the populated podium's own content height:
   // mPodiumGrid's 221 (31 of which is its paddingTop) plus the meta capsule's
   // 19 marginTop + 5/8 padding + ~32 of two text lines.
-  mLeaderEmpty: { flex: 1, minHeight: 285, alignItems: 'center', justifyContent: 'center', gap: 6 },
-  mLeaderEmptyDivider: { width: 1, height: 36, alignSelf: 'center', backgroundColor: RivalColors.accentFill, opacity: 0.4, marginTop: 4 },
-  mLegacyViewAllLink: { fontFamily: RivalFontFamily, fontSize: 13, fontWeight: '500', color: RivalColors.textSecondary },
+  mLeaderEmpty: { flex: 1, minHeight: 285, alignItems: 'center', justifyContent: 'flex-end', gap: 0, paddingBottom: 8 },
+  mGhostPodium: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, marginTop: 56 },
+  mGhostPillar: {
+    width: 72, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 10,
+    borderWidth: 1, borderBottomWidth: 0, borderColor: 'rgba(255,209,190,0.14)',
+    borderTopLeftRadius: 10, borderTopRightRadius: 10,
+    ...(Platform.OS === 'web'
+      ? ({ backgroundImage: 'linear-gradient(180deg, rgba(255,209,190,0.07) 0%, rgba(255,209,190,0) 100%)' } as any)
+      : { backgroundColor: 'rgba(255,209,190,0.04)' }),
+  },
+  mGhostPillarFirst: { borderColor: 'rgba(236,198,84,0.28)' },
+  mGhostMedal: { position: 'absolute', top: -70, backgroundColor: 'rgba(236,198,84,0.06)' },
+  mGhostPlace: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 20, fontWeight: '700', color: 'rgba(255,209,190,0.28)' },
+  mGhostStage: {
+    width: 280, height: 1, marginBottom: 22,
+    ...(Platform.OS === 'web'
+      ? ({ backgroundImage: 'linear-gradient(90deg, rgba(255,181,158,0) 0%, rgba(255,181,158,0.45) 50%, rgba(255,181,158,0) 100%)' } as any)
+      : { backgroundColor: 'rgba(255,181,158,0.3)' }),
+  },
 
 });

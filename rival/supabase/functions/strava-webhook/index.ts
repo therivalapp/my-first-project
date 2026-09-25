@@ -51,7 +51,7 @@ async function notifyActivityLanded(
     messages.push({
       to: ownToken.token,
       title: `+${effort} Effort`,
-      body: `${activityName} is in — straight from Strava.`,
+      body: `${activityName} synced from Strava.`,
       data: { screen: 'home' },
       sound: 'default',
     })
@@ -120,7 +120,7 @@ async function notifyActivityLanded(
           if (!t.token) continue
           messages.push({
             to: t.token,
-            title: `${firstName} just trained`,
+            title: `${firstName} logged an activity`,
             body: `${activityName} — ${effort} Effort`,
             data: { screen: 'team-feed' },
             sound: 'default',
@@ -395,7 +395,7 @@ serve(async (req) => {
         // resolve to a canonical row and land there too.
         if (event.aspect_type === 'create') {
           try {
-            await notifyActivityLanded(supabase, connection.user_id, activity.name || 'A session', effortScore, activity.start_date ?? null)
+            await notifyActivityLanded(supabase, connection.user_id, activity.name || 'An activity', effortScore, activity.start_date ?? null)
           } catch (pushErr) {
             // Never let this reach the response — Strava disables a
             // subscription that stops returning 2xx, which would kill every

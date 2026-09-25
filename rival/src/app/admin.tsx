@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RivalColors } from '../constants/rivalTheme';
+import { RivalColors, RivalButtonColors } from '../constants/rivalTheme';
 import { RivalIcon, RivalBackButton} from '../components/rival';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -203,9 +203,9 @@ export default function AdminScreen() {
                     disabled={saving === row.activity_type}
                   >
                     {saving === row.activity_type ? (
-                      <ActivityIndicator size="small" color={RivalColors.textPrimary} />
+                      <ActivityIndicator size="small" color={RivalButtonColors.label(RivalColors.textPrimary) } />
                     ) : (
-                      <RivalIcon name="check" size={16} color={RivalColors.textPrimary} />
+                      <RivalIcon name="check" size={16} color={RivalButtonColors.label(RivalColors.textPrimary) } />
                     )}
                   </TouchableOpacity>
                   <TouchableOpacity onPress={() => cancelEdit(row.activity_type)} style={styles.cancelBtn}>
@@ -374,7 +374,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   saveBtn: {
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
     borderRadius: 6,
     paddingHorizontal: 10,
     paddingVertical: 6,

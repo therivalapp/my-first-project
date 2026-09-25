@@ -7,13 +7,14 @@ import {
   isActionable,
   markRead,
   resolveItem,
+  respondToActivityTag,
   respondToJoinRequest,
   respondToShortActivity,
   type InboxItem,
 } from '@/lib/inbox';
 import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { RivalBackButton, RivalIcon, RivalTopNav, type RivalIconName } from '@/components/rival';
-import { RivalColors, RivalRadius, RivalSerifFamily, RivalType } from '@/constants/rivalTheme';
+import { RivalButtonColors, RivalColors, RivalRadius, RivalSerifFamily, RivalType } from '@/constants/rivalTheme';
 
 // The inbox. Items are answered where they sit rather than sending you off to
 // another screen to find the thing they are about — a notification you have to
@@ -25,6 +26,8 @@ const ICON_FOR: Record<InboxItem['kind'], RivalIconName> = {
   join_request: 'groups',
   short_activity: 'timerOutline',
   team_joined: 'checkCircle',
+  activity_tag: 'groups',
+  tag_accepted: 'verified',
 };
 
 function timeAgo(iso: string): string {
@@ -66,7 +69,7 @@ export default function InboxScreen() {
     const res = await run();
     setBusyId(null);
     if (!res.ok) {
-      setErrorFor((prev) => ({ ...prev, [item.id]: res.error || 'That did not work.' }));
+      setErrorFor((prev) => ({ ...prev, [item.id]: res.error || 'Something went wrong. Try again.' }));
       // Re-read regardless: the failure often means someone else already
       // handled it, and the list should stop showing a stale decision.
       await load();
@@ -80,6 +83,8 @@ export default function InboxScreen() {
       router.push('/team-feed');
     } else if (item.kind === 'team_joined' || item.kind === 'join_request') {
       router.push('/team-hub');
+    } else if (item.kind === 'tag_accepted') {
+      router.push('/my-activities');
     }
   }
 
@@ -106,8 +111,8 @@ export default function InboxScreen() {
         ) : unresolvedFirst.length === 0 ? (
           <View style={styles.empty}>
             <RivalIcon name="notificationsOutline" size={28} color={RivalColors.accentText} />
-            <Text style={styles.emptyTitle}>Nothing waiting</Text>
-            <Text style={styles.emptyBody}>Reactions, comments and requests will land here.</Text>
+            <Text style={styles.emptyTitle}>No notifications</Text>
+            <Text style={styles.emptyBody}>Reactions, comments and requests appear here.</Text>
           </View>
         ) : (
           unresolvedFirst.map((item) => {
@@ -158,14 +163,33 @@ export default function InboxScreen() {
                       disabled={busy}
                       onPress={() => act(item, () => respondToShortActivity(item, false))}
                     >
-                      <Text style={styles.secondaryText}>{busy ? '…' : 'Remove it'}</Text>
+                      <Text style={styles.secondaryText}>{busy ? '…' : 'Remove'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.primary}
                       disabled={busy}
                       onPress={() => act(item, () => respondToShortActivity(item, true))}
                     >
-                      <Text style={styles.primaryText}>{busy ? '…' : 'Keep it'}</Text>
+                      <Text style={styles.primaryText}>{busy ? '…' : 'Keep'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
+                {open && item.kind === 'activity_tag' ? (
+                  <View style={styles.actions}>
+                    <TouchableOpacity
+                      style={styles.secondary}
+                      disabled={busy}
+                      onPress={() => act(item, () => respondToActivityTag(item, false))}
+                    >
+                      <Text style={styles.secondaryText}>{busy ? '…' : 'Decline'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.primary}
+                      disabled={busy}
+                      onPress={() => act(item, () => respondToActivityTag(item, true))}
+                    >
+                      <Text style={styles.primaryText}>{busy ? '…' : 'Confirm'}</Text>
                     </TouchableOpacity>
                   </View>
                 ) : null}
@@ -221,9 +245,9 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: 10 },
   primary: {
     flex: 1, paddingVertical: 10, borderRadius: RivalRadius.md, alignItems: 'center',
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
   },
-  primaryText: { fontSize: 13.5, fontWeight: '700', color: '#2a1410' },
+  primaryText: { fontSize: 13.5, fontWeight: '700', color: RivalButtonColors.label('#2a1410') },
   secondary: {
     flex: 1, paddingVertical: 10, borderRadius: RivalRadius.md, alignItems: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',

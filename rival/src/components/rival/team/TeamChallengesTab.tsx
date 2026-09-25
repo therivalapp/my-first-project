@@ -3,7 +3,7 @@ import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import { supabase } from '../../../lib/supabase';
 import { notify } from '../../../lib/notify';
 import { formatTeamName } from '../../../lib/identity';
-import { RivalColors, RivalSerifFamily } from '../../../constants/rivalTheme';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../../../constants/rivalTheme';
 import { RivalIcon } from '../RivalIcon';
 import { sheet } from './sheetStyles';
 
@@ -232,7 +232,7 @@ export function TeamChallengesTab({
     <View style={{ gap: 22 }}>
       {/* ---- Teammate challenges ---- */}
       <View style={{ gap: 10 }}>
-        <Text style={s.sectionTitle}>Teammate Challenges</Text>
+        <Text style={s.sectionTitle}>Teammate challenges</Text>
         {loading ? (
           <Text style={s.muted}>Loading…</Text>
         ) : pending.length + active.length + done.length === 0 ? (
@@ -300,15 +300,15 @@ export function TeamChallengesTab({
       {/* ---- Team vs Team ---- */}
       <View style={{ gap: 10 }}>
         <View style={s.sectionHead}>
-          <Text style={s.sectionTitle}>Team vs Team</Text>
+          <Text style={s.sectionTitle}>Team vs team</Text>
           <TouchableOpacity style={s.pillBtn} onPress={() => setTeamSheetOpen(true)}>
             <RivalIcon name="race" size={14} color={RivalColors.accentText} />
-            <Text style={s.pillBtnText}>Challenge a Team</Text>
+            <Text style={s.pillBtnText}>Challenge a team</Text>
           </TouchableOpacity>
         </View>
 
         {!loading && teamPending.length + teamActive.length + teamDone.length === 0 && (
-          <Text style={s.muted}>Take on another team over a few days or a week.</Text>
+          <Text style={s.muted}>Compete against another team over a set period.</Text>
         )}
 
         {teamPending.map(t => {
@@ -330,7 +330,7 @@ export function TeamChallengesTab({
                 </View>
               ) : (
                 <Text style={s.muted}>
-                  {weSent ? "Waiting for their admin to respond." : 'Your team admin can accept or decline this.'}
+                  {weSent ? "Waiting for their admin to respond." : 'A team admin can accept or decline this.'}
                 </Text>
               )}
             </View>
@@ -451,7 +451,7 @@ export function ChallengeTeammateSheet({
           <View style={sheet.head}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={sheet.title}>Challenge {opponent?.name ?? ''}</Text>
-              <Text style={sheet.sub}>Whoever has more when it ends wins.</Text>
+              <Text style={sheet.sub}>The higher total at the end wins.</Text>
             </View>
             <TouchableOpacity style={sheet.close} onPress={onClose} accessibilityLabel="Close">
               <RivalIcon name="close" size={18} color={RivalColors.textSecondary} />
@@ -467,7 +467,7 @@ export function ChallengeTeammateSheet({
               <Text style={sheet.secondaryBtnText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[sheet.primaryBtn, (!valid || sending) && sheet.primaryBtnOff]} onPress={send} disabled={!valid || sending}>
-              <Text style={sheet.primaryBtnText}>{sending ? 'Sending…' : 'Send Challenge'}</Text>
+              <Text style={sheet.primaryBtnText}>{sending ? 'Sending…' : 'Send challenge'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -530,8 +530,8 @@ function ChallengeTeamSheet({
           <View style={sheet.grabber} />
           <View style={sheet.head}>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={sheet.title}>Challenge a Team</Text>
-              <Text style={sheet.sub}>Everyone's activity counts toward their team's total.</Text>
+              <Text style={sheet.title}>Challenge a team</Text>
+              <Text style={sheet.sub}>All member activity counts toward each team's total.</Text>
             </View>
             <TouchableOpacity style={sheet.close} onPress={onClose} accessibilityLabel="Close">
               <RivalIcon name="close" size={18} color={RivalColors.textSecondary} />
@@ -567,7 +567,7 @@ function ChallengeTeamSheet({
               <Text style={sheet.secondaryBtnText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[sheet.primaryBtn, (!valid || sending) && sheet.primaryBtnOff]} onPress={send} disabled={!valid || sending}>
-              <Text style={sheet.primaryBtnText}>{sending ? 'Sending…' : 'Send Challenge'}</Text>
+              <Text style={sheet.primaryBtnText}>{sending ? 'Sending…' : 'Send challenge'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -637,8 +637,8 @@ const s = StyleSheet.create({
   cardTitle: { fontSize: 15.5, fontWeight: '800', color: '#fff' },
   cardDetail: { fontSize: 13, color: RivalColors.textSecondary },
   btnRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-  primaryBtn: { flex: 1, minHeight: 44, borderRadius: 999, backgroundColor: RivalColors.accentFill, alignItems: 'center', justifyContent: 'center' },
-  primaryBtnText: { fontSize: 14, fontWeight: '800', color: RivalColors.surfaceLowest },
+  primaryBtn: { flex: 1, minHeight: 44, borderRadius: 999, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, alignItems: 'center', justifyContent: 'center' },
+  primaryBtnText: { fontSize: 14, fontWeight: '800', color: RivalButtonColors.label(RivalColors.surfaceLowest) },
   secondaryBtn: {
     flex: 1, minHeight: 44, borderRadius: 999, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)',

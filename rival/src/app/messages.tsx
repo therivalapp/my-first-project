@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, Platform, ScrollView, Image, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, Platform, ScrollView, Image, TouchableOpacity, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, router } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { formatTeamName } from '../lib/identity';
-import { RivalTopNav, RivalIcon } from '../components/rival';
+import { RivalTopNav, RivalIcon, RivalWarm, rm } from '../components/rival';
+import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 import { getUnreadChats } from '../lib/unreadChats';
-import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 
 // Same per-name color assignment as team-feed.tsx's team rail — kept as a
 // local copy rather than shared, matching how timeAgo is already duplicated
@@ -107,24 +108,31 @@ export default function MessagesScreen() {
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Phone: the RIVAL look — warm page, team names in the serif.
+  const { width } = useWindowDimensions();
+  const mob = width < BREAKPOINT_WIDE_LAYOUT;
 
   return (
     <View style={{ flex: 1 }}>
-      <View style={styles.mBgFixed} />
+      <View style={[styles.mBgFixed, mob && ms.bg]} />
       <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <RivalTopNav active="chat" />
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={styles.title}>Messages</Text>
+          <Text style={[styles.title, mob && ms.title]}>Messages</Text>
 
           {loading ? (
             <Text style={styles.stateText}>Loading…</Text>
           ) : threads.length === 0 ? (
-            <View style={styles.emptyState}>
-              <RivalIcon name="chat" size={28} color={RivalColors.accentText} />
-              <Text style={styles.emptyTitle}>No team chats yet</Text>
-              <Text style={styles.emptyBody}>Join or create a team to start chatting with your teammates.</Text>
-              <TouchableOpacity style={styles.emptyBtn} onPress={() => router.push('/discover-leagues')}>
-                <Text style={styles.emptyBtnText}>Find a Team</Text>
+            <View style={[styles.emptyState, mob && [rm.card, ms.empty]]}>
+              {mob ? (
+                <View style={rm.iconCircle}><RivalIcon name="chat" size={20} color={RivalColors.accentText} /></View>
+              ) : (
+                <RivalIcon name="chat" size={28} color={RivalColors.accentText} />
+              )}
+              <Text style={[styles.emptyTitle, mob && ms.emptyTitle]}>No team chats yet</Text>
+              <Text style={styles.emptyBody}>Join or create a team to message teammates.</Text>
+              <TouchableOpacity style={mob ? [rm.primary, ms.emptyBtn] : styles.emptyBtn} onPress={() => router.push('/discover-leagues')}>
+                <Text style={mob ? rm.primaryText : styles.emptyBtnText}>Find a team</Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -134,11 +142,11 @@ export default function MessagesScreen() {
                 return (
                   <TouchableOpacity
                     key={t.leagueId}
-                    style={styles.row}
+                    style={[styles.row, mob && ms.row]}
                     onPress={() => router.push({ pathname: '/chat', params: { id: t.leagueId } })}
                   >
                     {t.logoUrl ? (
-                      <Image source={{ uri: t.logoUrl }} style={styles.avatar} />
+                      <Image source={{ uri: t.logoUrl }} style={[styles.avatar, mob && ms.crest]} />
                     ) : (
                       <View style={[styles.avatarFallback, { backgroundColor: tint.bg }]}>
                         <Text style={[styles.avatarInitial, { color: tint.color }]}>{t.name[0]?.toUpperCase()}</Text>
@@ -146,13 +154,13 @@ export default function MessagesScreen() {
                     )}
                     <View style={styles.rowMain}>
                       <View style={styles.rowTop}>
-                        <Text style={[styles.rowName, t.unread && styles.rowNameUnread]} numberOfLines={1}>
+                        <Text style={[styles.rowName, mob && ms.rowName, t.unread && styles.rowNameUnread]} numberOfLines={1}>
                           {formatTeamName(t.name)}
                         </Text>
                         {t.lastAt && <Text style={styles.rowTime}>{timeAgo(t.lastAt)}</Text>}
                       </View>
                       <Text style={[styles.rowPreview, t.unread && styles.rowPreviewUnread]} numberOfLines={1}>
-                        {t.lastBody ? `${t.lastIsMine ? 'You: ' : ''}${t.lastBody}` : 'No messages yet — say hi'}
+                        {t.lastBody ? `${t.lastIsMine ? 'You: ' : ''}${t.lastBody}` : 'No messages yet.'}
                       </Text>
                     </View>
                     {t.unread && <View style={styles.unreadDot} />}
@@ -196,6 +204,18 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', gap: 8, paddingVertical: 48, paddingHorizontal: 20 },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
   emptyBody: { fontSize: 13, color: 'rgba(255,255,255,0.55)', textAlign: 'center' },
-  emptyBtn: { marginTop: 8, backgroundColor: RivalColors.accentFill, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 24 },
-  emptyBtnText: { fontSize: 13, fontWeight: '800', color: RivalColors.onAccentFill },
+  emptyBtn: { marginTop: 8, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 24 },
+  emptyBtnText: { fontSize: 13, fontWeight: '800', color: RivalButtonColors.label(RivalColors.onAccentFill) },
+});
+
+// Phone only — the RIVAL look (see RivalMobile.tsx).
+const ms = StyleSheet.create({
+  bg: { backgroundColor: RivalWarm.page },
+  title: { fontSize: 26, lineHeight: 32 },
+  row: { borderBottomColor: RivalWarm.hairline },
+  crest: { borderWidth: 1, borderColor: RivalWarm.cardBorder },
+  rowName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 17 },
+  empty: { alignItems: 'center', paddingVertical: 28 },
+  emptyTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 20 },
+  emptyBtn: { alignSelf: 'stretch', marginTop: 8 },
 });

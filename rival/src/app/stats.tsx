@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Image, Platform } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, ScrollView, Image, Platform, useWindowDimensions } from 'react-native';
 import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
+import { fetchReactionsOn } from '../lib/reactions';
 import { getLevel, xpProgressInLevel, LEVELS } from '../lib/xp';
 import { calculateStreak, StreakResult } from '../lib/streak';
 import { getSeasonStartISO, getCurrentSeasonYear, daysUntilSeasonEnd } from '../lib/season';
 import { RivalCard, RivalProgressBar, RivalIcon, RivalTopNav, RivalBackButton} from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RANK_LEVEL_COLORS, RivalSerifFamily } from '../constants/rivalTheme';
+import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
 // Refined Ember rank ramp only has 4 confirmed anchor colors from the Stitch
 // export (see rivalTheme.ts) — the interpolated 10-level ramp is provisional.
@@ -24,6 +26,11 @@ export default function StatsScreen() {
 
   const [displayName, setDisplayName] = useState('');
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  // What gets them through: a quote, a principle, a line they live by.
+  // Stored in users.bio; "Mindset" is the name people see.
+  const [mindset, setMindset] = useState('');
+  const { width } = useWindowDimensions();
+  const wide = width >= BREAKPOINT_WIDE_LAYOUT;
   const [totalPoints, setTotalPoints] = useState(0);
   const [seasonPoints, setSeasonPoints] = useState(0);
   const [pastSeasons, setPastSeasons] = useState<Array<{ year: number; final_xp: number; final_rank_name: string }>>([]);
@@ -37,6 +44,8 @@ export default function StatsScreen() {
   const [streak, setStreak] = useState<StreakResult | null>(null);
   const [inspiredCount, setInspiredCount] = useState(0);
   const [inspiredTimes, setInspiredTimes] = useState(0);
+  const [respectTimes, setRespectTimes] = useState(0);
+  const [peopleCount, setPeopleCount] = useState(0);
   const [memberSince, setMemberSince] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -62,7 +71,7 @@ export default function StatsScreen() {
     // Milestones, race ids and past seasons don't depend on the activities,
     // so they load alongside them instead of one after another afterwards.
     const [userRes, activitiesRes, { data: milestonesData }, { data: myRaceIdsData }, { data: seasonResultsData }] = await Promise.all([
-      supabase.from('users').select('display_name, avatar_url').eq('id', targetUserId).single(),
+      supabase.from('users').select('display_name, avatar_url, bio').eq('id', targetUserId).single(),
       fetchAllActivities(targetUserId, 'id, effort_score, started_at, distance_meters, elevation_meters, duration_seconds, activity_type'),
       supabase.from('milestones').select('type').eq('user_id', targetUserId),
       supabase.from('races').select('id').eq('user_id', targetUserId),
@@ -75,6 +84,7 @@ export default function StatsScreen() {
 
     setDisplayName(userRes.data?.display_name || (!viewingOther ? user.user_metadata?.display_name : '') || 'Athlete');
     setAvatarUrl(userRes.data?.avatar_url || null);
+    setMindset((userRes.data?.bio || '').trim());
 
     const activities = activitiesRes;
     const total = activities.reduce((sum, a) => sum + (a.effort_score || 0), 0);
@@ -99,21 +109,29 @@ export default function StatsScreen() {
     // 1000-row cap undercounting Impact for heavy importers.
     const myActivityIds = activities.map((a: any) => a.id);
     const myRaceIds = (myRaceIdsData || []).map((r: any) => r.id);
-    const reactionQueries: PromiseLike<{ data: { user_id: string }[] | null }>[] = [];
-    if (myActivityIds.length > 0) reactionQueries.push(supabase.from('feed_reactions').select('user_id').eq('target_type', 'activity').eq('emoji', 'inspired').in('target_id', myActivityIds));
-    if (myRaceIds.length > 0) reactionQueries.push(supabase.from('feed_reactions').select('user_id').eq('target_type', 'race').eq('emoji', 'inspired').in('target_id', myRaceIds));
-    if (reactionQueries.length > 0) {
-      const reactionResults = await Promise.all(reactionQueries);
-      const inspirers = new Set<string>();
-      let times = 0;
-      reactionResults.forEach(r => (r.data || []).forEach(row => {
-        if (row.user_id === targetUserId) return;
-        inspirers.add(row.user_id);
-        times += 1;
-      }));
-      setInspiredCount(inspirers.size);
-      setInspiredTimes(times);
-    }
+    // Activity reactions are fetched in batches (see lib/reactions.ts) — one
+    // request with every activity id in it is refused for a long history.
+    const [activityReactions, raceReactions] = await Promise.all([
+      fetchReactionsOn(myActivityIds),
+      myRaceIds.length > 0
+        ? supabase.from('feed_reactions').select('user_id, emoji').eq('target_type', 'race').in('target_id', myRaceIds).then((r) => r.data || [])
+        : Promise.resolve([] as { user_id: string; emoji: string }[]),
+    ]);
+    // Impact itself stays Inspired-only (AGENTS.md); "People" on the phone
+    // row counts everyone who has reacted at all.
+    const people = new Set<string>();
+    const inspirers = new Set<string>();
+    let inspired = 0;
+    let respect = 0;
+    [...activityReactions, ...raceReactions].forEach((row: { user_id: string; emoji: string }) => {
+      if (row.user_id === targetUserId) return;
+      people.add(row.user_id);
+      if (row.emoji === 'inspired') { inspired += 1; inspirers.add(row.user_id); } else respect += 1;
+    });
+    setInspiredCount(inspirers.size);
+    setPeopleCount(people.size);
+    setInspiredTimes(inspired);
+    setRespectTimes(respect);
 
     const now = new Date();
     const day = now.getDay();
@@ -164,7 +182,7 @@ export default function StatsScreen() {
 
         <View style={styles.header}>
           <RivalBackButton onPress={() => router.back()} color={RivalColors.accentFill} />
-          <Text style={styles.headerTitle}>{isOwnProfile ? 'Your Stats' : `${displayName}'s Stats`}</Text>
+          <Text style={styles.headerTitle}>{isOwnProfile ? 'Stats' : `${displayName}'s Stats`}</Text>
           <View style={{ width: 48 }} />
         </View>
 
@@ -177,6 +195,20 @@ export default function StatsScreen() {
               <Text style={styles.rankAvatarText}>{displayName ? displayName[0].toUpperCase() : '?'}</Text>
             )}
           </View>
+          {/* Mindset sits directly under the face it belongs to, in the
+              person's own words — the first thing a teammate reads after
+              tapping their name. Mobile only for now. */}
+          {!wide && mindset ? (
+            <View style={styles.mindset}>
+              <Text style={styles.mindsetLabel}>MINDSET</Text>
+              <Text style={styles.mindsetText}>“{mindset}”</Text>
+            </View>
+          ) : !wide && isOwnProfile ? (
+            <TouchableOpacity style={styles.mindset} activeOpacity={0.7} onPress={() => router.push('/profile')}>
+              <Text style={styles.mindsetLabel}>MINDSET</Text>
+              <Text style={styles.mindsetEmpty}>Share your Mindset →</Text>
+            </TouchableOpacity>
+          ) : null}
           <Text
             style={[
               styles.rankName,
@@ -232,7 +264,7 @@ export default function StatsScreen() {
               {Math.floor(totalTimeMinutes / 60) > 0 ? `${Math.floor(totalTimeMinutes / 60)}h ` : ''}
               {totalTimeMinutes % 60}m
             </Text>
-            <Text style={styles.timeEarnedSub}>Every minute in here is yours. You earned it.</Text>
+            <Text style={styles.timeEarnedSub}>Every minute here is yours. You earned it.</Text>
             {hardTimeMinutes > 0 && (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
                 <RivalIcon name="bolt" size={14} color={RivalColors.accentText} />
@@ -300,10 +332,10 @@ export default function StatsScreen() {
                 })}
               </View>
               {currentStreak === 0 && (
-                <Text style={styles.streakNudge}>Log 3 activities this week to start your streak.</Text>
+                <Text style={styles.streakNudge}>Log 3 activities this week to start a streak.</Text>
               )}
               {currentStreak === 1 && (
-                <Text style={styles.streakNudge}>One more qualifying week and it's a real streak.</Text>
+                <Text style={styles.streakNudge}>One more qualifying week starts a streak.</Text>
               )}
             </RivalCard>
           );
@@ -338,6 +370,24 @@ export default function StatsScreen() {
         {/* Impact */}
         <RivalCard style={styles.impactCard}>
           <Text style={styles.impactLabel}>IMPACT</Text>
+          {!wide && (
+            // Phone: the three numbers, the same set as Home's Legacy swipe.
+            <View style={styles.mImpactRow}>
+              {[
+                { icon: 'respect' as const, value: respectTimes, label: 'Respect' },
+                { icon: 'impact' as const, value: inspiredTimes, label: 'Inspired' },
+                { icon: 'groups' as const, value: peopleCount, label: 'People' },
+              ].map((f, i) => (
+                <View key={f.label} style={[styles.mImpactCell, i > 0 && styles.mImpactCellBorder]}>
+                  <RivalIcon name={f.icon} size={16} color={RivalColors.accentFill} />
+                  <Text style={styles.mImpactValue}>{f.value.toLocaleString()}</Text>
+                  <Text style={styles.mImpactLabel}>{f.label}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+          {wide && (
+          <>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <RivalIcon name="ai" size={18} color={RivalColors.textPrimary} />
             <Text style={styles.impactValue}>
@@ -349,12 +399,39 @@ export default function StatsScreen() {
               ? `by ${inspiredCount.toLocaleString()} ${inspiredCount === 1 ? 'person who keeps' : 'people who keep'} showing up`
               : 'Nobody yet — get out there.'}
           </Text>
+          </>
+          )}
         </RivalCard>
 
         {/* Past Seasons */}
         {pastSeasons.length > 0 && (
+          !wide ? (
+            // Phone: one card per year with the rank it finished on, each
+            // opening that year's review (on your own page).
+            <View style={styles.mPastYears}>
+              <Text style={styles.mPastYearsTitle}>Past years</Text>
+              <View style={styles.mPastYearsRow}>
+                {pastSeasons.map((s) => {
+                  const lvl = getLevel(s.final_xp);
+                  return (
+                    <TouchableOpacity
+                      key={s.year}
+                      style={styles.mPastYearCard}
+                      disabled={!isOwnProfile}
+                      activeOpacity={0.85}
+                      onPress={() => router.push({ pathname: '/year-review', params: { year: String(s.year) } })}
+                    >
+                      <Text style={styles.mPastYear}>{s.year}</Text>
+                      <Text style={[styles.mPastYearRank, { color: rankColorFor(lvl.level) }]} numberOfLines={1}>{s.final_rank_name}</Text>
+                      <Text style={styles.mPastYearEffort}>{Math.round(s.final_xp).toLocaleString()} Effort</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          ) : (
           <RivalCard style={styles.pastSeasonsCard}>
-            <Text style={styles.pastSeasonsTitle}>Past Seasons</Text>
+            <Text style={styles.pastSeasonsTitle}>Past years</Text>
             {pastSeasons.map((s) => {
               const seasonLvl = getLevel(s.final_xp);
               const seasonRankColor = rankColorFor(seasonLvl.level);
@@ -369,6 +446,7 @@ export default function StatsScreen() {
               );
             })}
           </RivalCard>
+          )
         )}
 
         {/* Quick links */}
@@ -385,9 +463,9 @@ export default function StatsScreen() {
             <RivalIcon name="stats" size={22} color={RivalColors.textPrimary} />
             <Text style={styles.quickLinkText}>Monthly Recap</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.quickLink} onPress={() => router.push('/recap?type=yearly')}>
-            <Text style={styles.quickLinkIcon}>🎄</Text>
-            <Text style={styles.quickLinkText}>Wrap Up</Text>
+          <TouchableOpacity style={styles.quickLink} onPress={() => router.push('/year-review')}>
+            <RivalIcon name="calendar" size={22} color={RivalColors.textPrimary} />
+            <Text style={styles.quickLinkText}>Year in review</Text>
           </TouchableOpacity>
         </View>
 
@@ -414,6 +492,13 @@ const styles = StyleSheet.create({
   rankAvatarImage: { width: 88, height: 88, borderRadius: 44 },
   rankAvatarText: { fontSize: 36, fontWeight: '700', color: RivalColors.onAccentFill },
   rankName: { fontSize: 36, fontWeight: '800', letterSpacing: 1 },
+  mindset: { alignItems: 'center', gap: 6, paddingHorizontal: 8, marginBottom: 4, maxWidth: 360 },
+  mindsetLabel: { ...RivalType.labelCaps, color: RivalColors.accentText },
+  mindsetText: {
+    fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 17, lineHeight: 24,
+    color: RivalColors.textPrimary, textAlign: 'center',
+  },
+  mindsetEmpty: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 15, color: RivalColors.textSecondary },
   levelPill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: RivalRadius.full, borderWidth: 1 },
   levelPillText: { fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
   seasonLabel: { fontSize: 12, color: RivalColors.textSecondary, marginTop: -4 },
@@ -463,6 +548,21 @@ const styles = StyleSheet.create({
   impactSub: { fontSize: 12, color: RivalColors.textSecondary, textAlign: 'center' },
 
   pastSeasonsCard: { marginBottom: 16, gap: 10 },
+  mImpactRow: { flexDirection: 'row', marginTop: 4 },
+  mImpactCell: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 6 },
+  mImpactCellBorder: { borderLeftWidth: 1, borderLeftColor: 'rgba(255,209,190,0.08)' },
+  mImpactValue: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 22, color: '#fff' },
+  mImpactLabel: { fontSize: 10.5, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase', color: 'rgba(255,255,255,0.55)' },
+  mPastYears: { marginBottom: 16, gap: 10 },
+  mPastYearsTitle: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', color: RivalColors.accentText },
+  mPastYearsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  mPastYearCard: {
+    flexBasis: '30%', flexGrow: 1, alignItems: 'center', gap: 3, paddingVertical: 14, paddingHorizontal: 6,
+    backgroundColor: '#1d1714', borderWidth: 1, borderColor: 'rgba(255,209,190,0.10)', borderRadius: 16,
+  },
+  mPastYear: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 20, color: '#fff' },
+  mPastYearRank: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.8 },
+  mPastYearEffort: { fontSize: 11.5, color: 'rgba(255,255,255,0.55)' },
   pastSeasonsTitle: { ...RivalType.labelCaps, color: RivalColors.textSecondary },
   pastSeasonRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderTopWidth: 1, borderTopColor: RivalColors.surfaceContainerHigh },
   pastSeasonYear: { fontSize: 14, fontWeight: '700', color: RivalColors.textPrimary, width: 50 },

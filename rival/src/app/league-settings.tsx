@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
-import { RivalIcon, RivalBackButton} from '../components/rival';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform } from 'react-native';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
+import { RivalIcon, RivalBackButton, RivalAvatar } from '../components/rival';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, Image, Platform, useWindowDimensions } from 'react-native';
+import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 import { confirmAction, notify } from '../lib/notify';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -33,11 +34,20 @@ type Member = {
   users: {
     display_name: string | null;
     email: string;
+    avatar_url?: string | null;
   };
 };
 
 export default function LeagueSettingsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  // Mobile gets the redesigned layout below; desktop keeps this page as it
+  // was until the mobile app is finished.
+  const { width: windowWidth } = useWindowDimensions();
+  const wide = windowWidth >= BREAKPOINT_WIDE_LAYOUT;
+  // Which member's actions are open. One at a time: each row carries a quiet
+  // "more" button instead of two outlined buttons, which stacked up into a
+  // wall of Make Admin / Remove on a team of any real size.
+  const [openMemberId, setOpenMemberId] = useState<string | null>(null);
   const [leagueName, setLeagueName] = useState('');
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
@@ -98,7 +108,7 @@ export default function LeagueSettingsScreen() {
 
     const { data: membersData } = await supabase
       .from('league_members')
-      .select('user_id, role, users(display_name)')
+      .select('user_id, role, users(display_name, avatar_url)')
       .eq('league_id', id)
       .eq('status', 'active');
 
@@ -106,7 +116,7 @@ export default function LeagueSettingsScreen() {
 
     const { data: pendingData } = await supabase
       .from('league_members')
-      .select('user_id, role, users(display_name)')
+      .select('user_id, role, users(display_name, avatar_url)')
       .eq('league_id', id)
       .eq('status', 'pending');
 
@@ -159,7 +169,7 @@ export default function LeagueSettingsScreen() {
       .eq('id', id);
     setConfirmingCrest(false);
     if (error) {
-      setCrestError('Failed to save your crest. Please try again.');
+      setCrestError("Couldn't save the crest. Try again.");
       return;
     }
     setLogoUrl(url);
@@ -240,6 +250,233 @@ export default function LeagueSettingsScreen() {
     );
   }
 
+
+  if (!wide) {
+    const crestLabel = generatingCrest
+      ? 'Generating…'
+      : cooldownActive
+        ? `New crest available ${nextCrestEligibleAt(crestGeneratedAt!).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
+        : crestGeneratedAt ? 'Regenerate crest' : 'Generate a crest';
+
+    const memberRow = (member: Member, isRequest: boolean) => {
+      const name = isRequest ? formatDisplayName(member.users) : getDisplayName(member);
+      const isCreator = member.user_id === createdBy;
+      const isYou = member.user_id === currentUserId;
+      const manageable = !isRequest && !isYou && !isCreator;
+      const open = openMemberId === member.user_id;
+      return (
+        <View key={member.user_id} style={ms.member}>
+          <View style={ms.memberMain}>
+            <RivalAvatar uri={member.users?.avatar_url ?? null} name={name} size={38} />
+            <View style={ms.memberText}>
+              <Text style={ms.memberName} numberOfLines={1}>{name}{isYou ? <Text style={ms.memberYou}>  You</Text> : null}</Text>
+              {isRequest ? (
+                <Text style={ms.memberRole}>Join request</Text>
+              ) : isCreator ? (
+                <Text style={ms.memberRole}>Founder</Text>
+              ) : member.role === 'admin' ? (
+                <Text style={ms.memberRole}>Admin</Text>
+              ) : null}
+            </View>
+            {isRequest ? (
+              <View style={ms.requestActions}>
+                <TouchableOpacity
+                  style={ms.ghostBtn}
+                  onPress={() => respondToRequest(member.user_id, false)}
+                  disabled={respondingTo === member.user_id}
+                >
+                  <Text style={ms.ghostBtnText}>Decline</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={ms.fillBtn}
+                  onPress={() => respondToRequest(member.user_id, true)}
+                  disabled={respondingTo === member.user_id}
+                >
+                  <Text style={ms.fillBtnText}>{respondingTo === member.user_id ? '…' : 'Approve'}</Text>
+                </TouchableOpacity>
+              </View>
+            ) : manageable ? (
+              <TouchableOpacity
+                style={[ms.moreBtn, open && ms.moreBtnOpen]}
+                onPress={() => setOpenMemberId(open ? null : member.user_id)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <RivalIcon name="moreHoriz" size={20} color={open ? RivalColors.accentText : 'rgba(255,255,255,0.55)'} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          {open ? (
+            <View style={ms.memberMenu}>
+              <TouchableOpacity
+                style={ms.menuItem}
+                onPress={() => { setOpenMemberId(null); toggleAdmin(member.user_id, member.role); }}
+              >
+                <RivalIcon name="person" size={16} color={RivalColors.onSurface} />
+                <Text style={ms.menuText}>{member.role === 'admin' ? 'Remove as admin' : 'Make admin'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={ms.menuItem}
+                onPress={() => { setOpenMemberId(null); kickMember(member.user_id); }}
+              >
+                <RivalIcon name="close" size={16} color="#ff8f8f" />
+                <Text style={[ms.menuText, ms.menuDanger]}>Remove from team</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </View>
+      );
+    };
+
+    return (
+      <SafeAreaView style={ms.page}>
+        <ScrollView contentContainerStyle={ms.content}>
+          <View style={ms.header}>
+            <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace({ pathname: '/team-hub', params: { id } }))} />
+            <Text style={ms.headerTitle}>Team settings</Text>
+          </View>
+
+          {/* Identity: crest and name together, because they are one thing —
+              the name is painted into the crest artwork. */}
+          <View style={ms.identity}>
+            {crestCandidates ? (
+              <>
+                <Text style={ms.pickHint}>Choose a crest</Text>
+                <View style={ms.pickRow}>
+                  {crestCandidates.map((url, i) => (
+                    <TouchableOpacity key={i} style={ms.pickFrame} onPress={() => chooseCrest(url)} disabled={confirmingCrest} activeOpacity={0.85}>
+                      <Image source={{ uri: url }} style={ms.pickImg} resizeMode="contain" />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {confirmingCrest ? <Text style={ms.pickHint}>Saving…</Text> : null}
+              </>
+            ) : (
+              <View style={ms.crestFrame}>
+                {logoUrl ? (
+                  // Contain, not cover: the team name is painted into the
+                  // artwork, and cover was cropping it off both edges.
+                  <Image source={{ uri: logoUrl }} style={ms.crestImg} resizeMode="contain" />
+                ) : (
+                  <View style={ms.crestEmpty}>
+                    <RivalIcon name="groups" size={34} color={RivalColors.accentText} />
+                    <Text style={ms.crestEmptyText}>No crest yet</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {editingName ? (
+              <View style={ms.nameEdit}>
+                <TextInput
+                  style={ms.nameInput}
+                  value={newName}
+                  onChangeText={setNewName}
+                  autoFocus
+                  autoCapitalize="words"
+                  maxLength={40}
+                  placeholder="Team name"
+                  placeholderTextColor="rgba(255,255,255,0.3)"
+                />
+                <View style={ms.nameEditActions}>
+                  <TouchableOpacity onPress={() => { setEditingName(false); setNewName(leagueName); }} style={ms.ghostBtn}>
+                    <Text style={ms.ghostBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={ms.fillBtn} onPress={saveName} disabled={saving}>
+                    <Text style={ms.fillBtnText}>{saving ? 'Saving…' : 'Save name'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <>
+                <Text style={ms.teamName}>{formatTeamName(leagueName)}</Text>
+                {cooldownActive ? (
+                  <View style={ms.lockedRow}>
+                    <RivalIcon name="lock" size={13} color="rgba(255,255,255,0.45)" />
+                    <Text style={ms.lockedText}>The name is part of the crest and is locked until the next crest is available</Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity onPress={() => setEditingName(true)} hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}>
+                    <Text style={ms.renameLink}>Rename team</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+
+            {!crestCandidates && !editingName ? (
+              <TouchableOpacity
+                style={[ms.crestBtn, (generatingCrest || cooldownActive) && ms.crestBtnOff]}
+                onPress={generateCrest}
+                disabled={generatingCrest || cooldownActive}
+                activeOpacity={0.85}
+              >
+                {!cooldownActive ? (
+                  <RivalIcon name="ai" size={16} color={generatingCrest ? 'rgba(255,255,255,0.5)' : RivalButtonColors.label(RivalColors.onAccentFill)} />
+                ) : null}
+                <Text style={[ms.crestBtnText, (generatingCrest || cooldownActive) && ms.crestBtnTextOff]}>{crestLabel}</Text>
+              </TouchableOpacity>
+            ) : null}
+            {crestError ? <Text style={ms.error}>{crestError}</Text> : null}
+          </View>
+
+          {/* Visibility as a two-way choice, both options visible, instead of
+              a button whose label was the opposite of the current state. */}
+          <View style={ms.card}>
+            <Text style={ms.cardLabel}>Who can join</Text>
+            <View style={ms.segment}>
+              {([true, false] as const).map((priv) => {
+                const on = isPrivate === priv;
+                return (
+                  <TouchableOpacity
+                    key={String(priv)}
+                    style={[ms.segmentBtn, on && ms.segmentBtnOn]}
+                    activeOpacity={0.85}
+                    onPress={async () => {
+                      if (on) return;
+                      setIsPrivate(priv);
+                      const { error } = await supabase.from('leagues').update({ is_private: priv }).eq('id', id);
+                      if (error) {
+                        // Put it back. Showing "Private" over a team that is
+                        // still discoverable is a privacy failure, not a cosmetic one.
+                        setIsPrivate(!priv);
+                        notify("Couldn't update team visibility", error.message);
+                      }
+                    }}
+                  >
+                    <RivalIcon name={priv ? 'lock' : 'globe'} size={15} color={on ? RivalButtonColors.label(RivalColors.onAccentFill) : RivalColors.textSecondary} />
+                    <Text style={[ms.segmentText, on && ms.segmentTextOn]}>{priv ? 'Private' : 'Public'}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            <Text style={ms.cardHint}>
+              {isPrivate
+                ? 'Only people with your invite code can join.'
+                : 'Anyone can find this team and ask to join. You approve every request.'}
+            </Text>
+          </View>
+
+          {pendingRequests.length > 0 && (
+            <View style={ms.card}>
+              <View style={ms.cardHead}>
+                <Text style={ms.cardLabel}>Join requests</Text>
+                <View style={ms.countBadge}><Text style={ms.countBadgeText}>{pendingRequests.length}</Text></View>
+              </View>
+              {pendingRequests.map((r) => memberRow(r, true))}
+            </View>
+          )}
+
+          <View style={ms.card}>
+            <View style={ms.cardHead}>
+              <Text style={ms.cardLabel}>Members</Text>
+              <Text style={ms.cardCount}>{members.length}</Text>
+            </View>
+            {members.map((mbr) => memberRow(mbr, false))}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -257,7 +494,7 @@ export default function LeagueSettingsScreen() {
         <Text style={styles.sectionLabel}>Team Crest</Text>
         {crestCandidates ? (
           <>
-            <Text style={styles.crestPickHint}>Pick your crest:</Text>
+            <Text style={styles.crestPickHint}>Choose a crest</Text>
             <View style={styles.crestPickRow}>
               {crestCandidates.map((url, i) => (
                 <TouchableOpacity
@@ -270,7 +507,7 @@ export default function LeagueSettingsScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-            {confirmingCrest ? <Text style={styles.crestPickHint}>Saving your pick…</Text> : null}
+            {confirmingCrest ? <Text style={styles.crestPickHint}>Saving…</Text> : null}
           </>
         ) : (
           <>
@@ -335,7 +572,7 @@ export default function LeagueSettingsScreen() {
           )}
         </View>
         {cooldownActive ? (
-          <Text style={styles.nameLockedHint}>Your AI crest has this name built into the artwork, so the name is locked until your next crest is available.</Text>
+          <Text style={styles.nameLockedHint}>The name is part of the crest artwork and is locked until the next crest is available.</Text>
         ) : null}
 
         {/* Visibility */}
@@ -360,7 +597,7 @@ export default function LeagueSettingsScreen() {
                   // Put the switch back. Showing "Private" over a team that is
                   // still discoverable is a privacy failure, not a cosmetic one.
                   setIsPrivate(!newVal);
-                  notify("Couldn't change who can find this team", error.message);
+                  notify("Couldn't update team visibility", error.message);
                 }
               }}
             >
@@ -541,13 +778,13 @@ const styles = StyleSheet.create({
     borderColor: RivalColors.accentFill,
   },
   saveBtn: {
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
   },
   saveBtnText: {
-    color: RivalColors.textPrimary,
+    color: RivalButtonColors.label(RivalColors.textPrimary),
     fontWeight: '700',
     fontSize: 14,
   },
@@ -560,9 +797,9 @@ const styles = StyleSheet.create({
   logoPlaceholder: { paddingVertical: 32, alignItems: 'center', gap: 8 },
   logoPlaceholderIcon: { fontSize: 36 },
   logoPlaceholderHint: { fontSize: 13, color: RivalColors.textSecondary },
-  crestBtn: { marginTop: 10, paddingVertical: 12, borderRadius: 10, alignItems: 'center', backgroundColor: RivalColors.accentFill },
-  crestBtnDisabled: { backgroundColor: RivalColors.surfaceHigh },
-  crestBtnText: { color: RivalColors.textPrimary, fontSize: 14, fontWeight: '700' },
+  crestBtn: { marginTop: 10, paddingVertical: 12, borderRadius: 10, alignItems: 'center', backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient },
+  crestBtnDisabled: { backgroundColor: RivalColors.surfaceHigh, ...RivalButtonColors.noGradient },
+  crestBtnText: { color: RivalButtonColors.label(RivalColors.textPrimary), fontSize: 14, fontWeight: '700' },
   crestErrorText: { color: '#FF6B6B', fontSize: 13, marginTop: 6 },
   crestPickHint: { color: RivalColors.textSecondary, fontSize: 13, marginBottom: 10 },
   crestPickRow: { flexDirection: 'row', gap: 10, marginBottom: 28 },
@@ -626,4 +863,84 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+});
+
+// Mobile styles — the warm palette the rest of the mobile app now uses.
+const WARM = '#1d1714';
+const ms = StyleSheet.create({
+  page: { flex: 1, backgroundColor: '#110e0c' },
+  content: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 48, gap: 14 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
+  headerTitle: { fontSize: 12, fontWeight: '800', letterSpacing: 1.2, textTransform: 'uppercase', color: RivalColors.accentText },
+
+  identity: {
+    alignItems: 'center', gap: 10, borderRadius: 20, paddingVertical: 22, paddingHorizontal: 18,
+    borderWidth: 1, borderColor: 'rgba(255,181,158,0.16)', backgroundColor: '#2d241f',
+    ...(Platform.OS === 'web' ? {
+      backgroundImage: 'radial-gradient(circle at 50% -10%, rgba(255,209,190,0.18) 0%, rgba(255,209,190,0) 65%), linear-gradient(160deg, #231e1b 0%, #2d241f 55%, #3b2821 100%)',
+    } as any : {}),
+  },
+  crestFrame: { width: 200, height: 200, alignItems: 'center', justifyContent: 'center' },
+  crestImg: { width: 200, height: 200 },
+  crestEmpty: { width: 160, height: 160, borderRadius: 80, alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: 'rgba(255,209,190,0.06)', borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,209,190,0.3)' },
+  crestEmptyText: { fontSize: 12.5, fontWeight: '600', color: 'rgba(255,255,255,0.5)' },
+  pickHint: { fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.6)' },
+  pickRow: { flexDirection: 'row', gap: 8, alignSelf: 'stretch' },
+  pickFrame: { flex: 1, aspectRatio: 1, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: 'rgba(255,209,190,0.25)', overflow: 'hidden' },
+  pickImg: { width: '100%', height: '100%' },
+
+  teamName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 26, fontWeight: '700', color: '#fff', textAlign: 'center' },
+  renameLink: { fontSize: 13, fontWeight: '700', color: RivalColors.accentText },
+  lockedRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12 },
+  lockedText: { fontSize: 12, color: 'rgba(255,255,255,0.45)', textAlign: 'center', flexShrink: 1 },
+
+  nameEdit: { alignSelf: 'stretch', gap: 10 },
+  nameInput: {
+    backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
+    fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 22, fontWeight: '700', color: '#fff', textAlign: 'center',
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}),
+  },
+  nameEditActions: { flexDirection: 'row', gap: 10, justifyContent: 'center' },
+
+  crestBtn: {
+    marginTop: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 12, paddingHorizontal: 22, borderRadius: 999, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
+  },
+  crestBtnOff: { backgroundColor: 'rgba(255,255,255,0.06)', ...RivalButtonColors.noGradient },
+  crestBtnText: { fontSize: 14, fontWeight: '800', color: RivalButtonColors.label(RivalColors.onAccentFill) },
+  crestBtnTextOff: { color: 'rgba(255,255,255,0.5)', fontWeight: '600', fontSize: 12.5 },
+  error: { fontSize: 12.5, color: '#ff8f8f', textAlign: 'center' },
+
+  card: { backgroundColor: WARM, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', padding: 16, gap: 12 },
+  cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  cardLabel: { fontSize: 11, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', color: RivalColors.accentText },
+  cardCount: { fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.45)' },
+  cardHint: { fontSize: 12.5, lineHeight: 17, color: 'rgba(255,255,255,0.5)' },
+  countBadge: { minWidth: 20, height: 20, borderRadius: 10, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient },
+  countBadgeText: { fontSize: 11, fontWeight: '800', color: RivalButtonColors.label(RivalColors.onAccentFill) },
+
+  segment: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 999, padding: 4, gap: 4 },
+  segmentBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 999 },
+  segmentBtnOn: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient },
+  segmentText: { fontSize: 14, fontWeight: '700', color: RivalColors.textSecondary },
+  segmentTextOn: { color: RivalButtonColors.label(RivalColors.onAccentFill) },
+
+  member: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)', paddingTop: 12 },
+  memberMain: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  memberText: { flex: 1, minWidth: 0, gap: 2 },
+  memberName: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  memberYou: { fontSize: 11.5, fontWeight: '700', color: 'rgba(255,255,255,0.4)' },
+  memberRole: { fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', color: RivalColors.accentText },
+  moreBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.04)' },
+  moreBtnOpen: { backgroundColor: 'rgba(255,209,190,0.12)' },
+  memberMenu: { marginTop: 10, marginLeft: 50, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)', paddingVertical: 4 },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: 12 },
+  menuText: { fontSize: 14, fontWeight: '600', color: RivalColors.onSurface },
+  menuDanger: { color: '#ff8f8f' },
+  requestActions: { flexDirection: 'row', gap: 8 },
+
+  fillBtn: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, alignItems: 'center' },
+  fillBtnText: { fontSize: 13.5, fontWeight: '800', color: RivalButtonColors.label(RivalColors.onAccentFill) },
+  ghostBtn: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', alignItems: 'center' },
+  ghostBtnText: { fontSize: 13.5, fontWeight: '700', color: RivalColors.textSecondary },
 });

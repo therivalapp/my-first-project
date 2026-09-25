@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { RivalTopNav, RivalIcon, RivalFixedBackground } from '../components/rival';
 import type { RivalIconName } from '../components/rival/RivalIcon';
-import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
+import { RivalColors, RivalRadius, RivalType, RivalButtonColors } from '../constants/rivalTheme';
 import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { formatGoalTimeMask } from '../lib/format';
 import { Asset } from 'expo-asset';
@@ -241,7 +241,7 @@ export default function CreateLeagueScreen() {
   const [nameFocused, setNameFocused] = useState(false);
   const [isPrivate, setIsPrivate] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [loadingLabel, setLoadingLabel] = useState('Creating...');
+  const [loadingLabel, setLoadingLabel] = useState('Creating…');
   const [error, setError] = useState('');
 
   // Journeys: a league becomes a shared destination when a race is attached — see
@@ -463,7 +463,7 @@ export default function CreateLeagueScreen() {
 
   async function handleCreate() {
     if (!name.trim()) {
-      setError('Please enter a team name.');
+      setError('Enter a team name.');
       return;
     }
 
@@ -485,7 +485,7 @@ export default function CreateLeagueScreen() {
 
     const { data: { user } } = await getAuthUser();
     if (!user) {
-      setError('Not logged in.');
+      setError('Sign in to continue.');
       setLoading(false);
       return;
     }
@@ -495,7 +495,7 @@ export default function CreateLeagueScreen() {
     let currentLeagueId = leagueId;
 
     if (!currentLeagueId) {
-      setLoadingLabel('Creating team...');
+      setLoadingLabel('Creating team…');
       const inviteCode = generateInviteCode();
 
       // Generate the id client-side instead of relying on .select() to hand
@@ -521,7 +521,7 @@ export default function CreateLeagueScreen() {
 
       if (leagueError) {
         console.log('League error:', JSON.stringify(leagueError));
-        setError('Failed to create team. Please try again.');
+        setError("Couldn't create the team. Try again.");
         setLoading(false);
         return;
       }
@@ -534,7 +534,7 @@ export default function CreateLeagueScreen() {
 
       if (memberError) {
         console.log('League member error:', JSON.stringify(memberError));
-        setError('Team was created but adding you as admin failed. Please try again.');
+        setError("The team was created, but admin access couldn't be assigned. Try again.");
         setLoading(false);
         return;
       }
@@ -543,7 +543,7 @@ export default function CreateLeagueScreen() {
       setLeagueId(newLeagueId);
     }
 
-    setLoadingLabel('Generating crest...');
+    setLoadingLabel('Generating crest…');
     const { data, error: genError } = await supabase.functions.invoke('generate-team-crest', { body: { leagueId: currentLeagueId } });
     if (genError || data?.error) {
       setError(data?.error || genError?.message || 'Crest generation failed');
@@ -565,7 +565,7 @@ export default function CreateLeagueScreen() {
       .eq('id', leagueId);
     setConfirmingCrest(false);
     if (error) {
-      setError('Failed to save your crest. Please try again.');
+      setError("Couldn't save the crest. Try again.");
       return;
     }
     setCrestCandidates(null);
@@ -587,7 +587,7 @@ export default function CreateLeagueScreen() {
 
     const { data: { user } } = await getAuthUser();
     if (!user) {
-      setAddRaceError('Not logged in.');
+      setAddRaceError('Sign in to continue.');
       setAddingRace(false);
       return;
     }
@@ -630,7 +630,7 @@ export default function CreateLeagueScreen() {
           <View style={styles.panel}>
             {crestCandidates ? (
               <View style={styles.revealBlock}>
-                <Text style={styles.revealEyebrow}>Pick Your Crest</Text>
+                <Text style={styles.revealEyebrow}>Choose a Crest</Text>
                 <Text style={styles.subtitle}>Three takes on {name.trim()} — choose the one that's your team.</Text>
                 <View style={styles.crestPickRow}>
                   {crestCandidates.map((url, i) => (
@@ -644,17 +644,17 @@ export default function CreateLeagueScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                {confirmingCrest ? <Text style={styles.subtitle}>Saving your pick…</Text> : null}
+                {confirmingCrest ? <Text style={styles.subtitle}>Saving…</Text> : null}
                 {error ? <Text style={styles.error}>{error}</Text> : null}
               </View>
             ) : revealCrestUrl ? (
               <View style={styles.revealBlock}>
-                <Text style={styles.revealEyebrow}>Your Crest</Text>
+                <Text style={styles.revealEyebrow}>Team Crest</Text>
                 <View style={styles.revealCrestFrame}>
                   <Image source={{ uri: revealCrestUrl }} style={styles.revealCrestImg} />
                 </View>
                 <Text style={styles.title}>{name.trim()}</Text>
-                <Text style={styles.subtitle}>Generated just for your team — one of a kind.</Text>
+                <Text style={styles.subtitle}>Generated uniquely for this team.</Text>
                 <TouchableOpacity style={[styles.createButton, styles.revealEnterBtn]} onPress={enterTeam}>
                   <Text style={styles.createButtonText}>Enter Team</Text>
                 </TouchableOpacity>
@@ -662,7 +662,7 @@ export default function CreateLeagueScreen() {
             ) : (
             <>
             <View style={styles.header}>
-              <Text style={styles.title}>Create Your Team</Text>
+              <Text style={styles.title}>Create a Team</Text>
               <Text style={styles.subtitle}>Fitness is better when it's shared.</Text>
             </View>
 
@@ -671,7 +671,7 @@ export default function CreateLeagueScreen() {
                 <Text style={styles.label}>Team Name</Text>
                 <TextInput
                   style={[styles.input, nameFocused && styles.inputFocused]}
-                  placeholder="e.g. Half Marathon 2026"
+                  placeholder="Half Marathon 2026"
                   placeholderTextColor="rgba(219,193,185,0.4)"
                   value={name}
                   onChangeText={setName}
@@ -683,7 +683,7 @@ export default function CreateLeagueScreen() {
                 {name.trim() ? (
                   <View style={styles.namePreviewHint}>
                     <RivalIcon name="ai" size={13} color={RivalColors.accentText} />
-                    <Text style={styles.namePreviewHintText}>Your team's crest will be generated from this name.</Text>
+                    <Text style={styles.namePreviewHintText}>The crest is generated from this name.</Text>
                   </View>
                 ) : null}
               </View>
@@ -707,13 +707,13 @@ export default function CreateLeagueScreen() {
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.privacyHint}>
-                  {isPrivate ? 'Invite only — members join with a code.' : 'Anyone can find and request to join.'}
+                  {isPrivate ? 'Invite only. Members join with a code.' : 'Anyone can find and request to join.'}
                 </Text>
               </View>
 
               <View>
                 <Text style={styles.label}>Shared Goal (Optional)</Text>
-                <Text style={styles.toggleSubtitle}>Choose an event your team is training towards together — everyone keeps their own goal while sharing the same finish line.</Text>
+                <Text style={styles.toggleSubtitle}>An event the team is training toward. Members keep individual goals while sharing the same finish line.</Text>
                 <TouchableOpacity
                   style={[styles.pathCardWide, !teamGoalMode && selectedRaceId === null && styles.pathCardActive]}
                   onPress={() => { setSelectedRaceId(null); setTeamGoalMode(false); }}
@@ -722,8 +722,8 @@ export default function CreateLeagueScreen() {
                     <RivalIcon name="groups" size={16} color={RivalColors.accentText} />
                   </View>
                   <View style={styles.pathCardWideText}>
-                    <Text style={styles.pathTitle}>Just a Team</Text>
-                    <Text style={styles.pathDesc}>No event attached. Just train together.</Text>
+                    <Text style={styles.pathTitle}>No Event</Text>
+                    <Text style={styles.pathDesc}>Train together without a shared event.</Text>
                   </View>
                 </TouchableOpacity>
                 {myRaces.length > 0 && (
@@ -765,7 +765,7 @@ export default function CreateLeagueScreen() {
                   </View>
                   <View style={styles.pathCardWideText}>
                     <Text style={styles.pathTitle}>Set a Team Target</Text>
-                    <Text style={styles.pathDesc}>Everyone's effort counts toward one shared number by a deadline.</Text>
+                    <Text style={styles.pathDesc}>All member activity counts toward one shared target.</Text>
                   </View>
                 </TouchableOpacity>
 
@@ -787,7 +787,7 @@ export default function CreateLeagueScreen() {
                           <Text style={styles.inlineTargetLabel}>Target</Text>
                           <TextInput
                             style={[styles.panelInput, styles.targetInput]}
-                            placeholder="e.g. 1000"
+                            placeholder="1000"
                             placeholderTextColor="rgba(219,193,185,0.4)"
                             value={goalTarget}
                             onChangeText={setGoalTarget}
@@ -853,7 +853,7 @@ export default function CreateLeagueScreen() {
             <View style={styles.modalHeaderRow}>
               <View>
                 <Text style={styles.modalTitle}>Add an Event</Text>
-                <Text style={styles.modalSubtitle}>Give your team something to train towards.</Text>
+                <Text style={styles.modalSubtitle}>A shared event for the team to train toward.</Text>
               </View>
               <TouchableOpacity onPress={closeAddRace} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <RivalIcon name="close" size={20} color={RivalColors.textSecondary} />
@@ -908,7 +908,7 @@ export default function CreateLeagueScreen() {
               <View style={styles.searchBarRow}>
                 <TextInput
                   style={[styles.panelInput, styles.searchBarInput]}
-                  placeholder="e.g. Auckland Half Marathon"
+                  placeholder="Auckland Half Marathon"
                   placeholderTextColor="rgba(219,193,185,0.4)"
                   value={raceName}
                   onChangeText={setRaceName}
@@ -920,7 +920,7 @@ export default function CreateLeagueScreen() {
               </View>
               <View style={styles.searchStatusRow}>
                 <Text style={[styles.searchPanelStatus, linkJustFound && styles.searchPanelStatusFound]} numberOfLines={1}>
-                  {searchingLink ? 'Searching…' : searchLinkError ? searchLinkError : regUrl ? '✓ Website found' : 'Search auto-fills the website below'}
+                  {searchingLink ? 'Searching…' : searchLinkError ? searchLinkError : regUrl ? '✓ Website found' : 'Search fills in the website automatically'}
                 </Text>
                 {linkCandidates.length > 0 && (
                   <TouchableOpacity onPress={() => setShowLinkAlternatives(v => !v)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
@@ -1009,7 +1009,7 @@ export default function CreateLeagueScreen() {
                     style={[styles.typeChip, raceType === t && styles.typeChipActive]}
                     onPress={() => setRaceType(t)}
                   >
-                    <RivalIcon name={RACE_TYPE_ICONS[t]} size={14} color={raceType === t ? RivalColors.onAccentFill : RivalColors.onSurfaceVariant} />
+                    <RivalIcon name={RACE_TYPE_ICONS[t]} size={14} color={raceType === t ? RivalButtonColors.label(RivalColors.onAccentFill) : RivalColors.onSurfaceVariant} />
                     <Text style={[styles.typeChipText, raceType === t && styles.typeChipTextActive]}>{t}</Text>
                   </TouchableOpacity>
                 ))}
@@ -1061,7 +1061,7 @@ export default function CreateLeagueScreen() {
                   <Text style={[styles.panelLabel, { marginTop: 16 }]}>Disciplines</Text>
                   {customDisciplines.map((d, i) => (
                     <View key={i} style={styles.customDisciplineRow}>
-                      <TextInput style={[styles.panelInput, { flex: 1, minWidth: 0 }]} placeholder="e.g. Kayak" placeholderTextColor="rgba(219,193,185,0.4)" value={d.name} onChangeText={v => updateCustomDiscipline(i, 'name', v)} />
+                      <TextInput style={[styles.panelInput, { flex: 1, minWidth: 0 }]} placeholder="Kayak" placeholderTextColor="rgba(219,193,185,0.4)" value={d.name} onChangeText={v => updateCustomDiscipline(i, 'name', v)} />
                       <TextInput style={[styles.panelInput, styles.disciplineInput]} placeholder="km" placeholderTextColor="rgba(219,193,185,0.4)" value={d.distance} onChangeText={v => updateCustomDiscipline(i, 'distance', v)} keyboardType="decimal-pad" />
                       {customDisciplines.length > 1 && (
                         <TouchableOpacity onPress={() => removeCustomDiscipline(i)}>
@@ -1142,7 +1142,7 @@ export default function CreateLeagueScreen() {
                 onPress={saveAddRace}
                 disabled={!isAddRaceValid() || addingRace}
               >
-                <Text style={styles.createButtonText}>{addingRace ? 'Adding...' : 'Add Event'}</Text>
+                <Text style={styles.createButtonText}>{addingRace ? 'Adding…' : 'Add Event'}</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -1239,14 +1239,14 @@ const styles = StyleSheet.create({
   error: { color: RivalColors.error, fontSize: 13 },
 
   createButton: {
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
     paddingVertical: 18,
     borderRadius: RivalRadius.lg,
     alignItems: 'center',
     ...(Platform.OS === 'web' ? { boxShadow: '0 10px 30px rgba(217,119,87,0.2)' } as any : {}),
   },
   createButtonDisabled: { opacity: 0.5 },
-  createButtonText: { ...RivalType.titleMd, fontSize: 15, color: RivalColors.onAccentFill, textTransform: 'uppercase', letterSpacing: 1.5 },
+  createButtonText: { ...RivalType.titleMd, fontSize: 15, color: RivalButtonColors.label(RivalColors.onAccentFill), textTransform: 'uppercase', letterSpacing: 1.5 },
   footerHint: { ...RivalType.labelCaps, fontSize: 13, letterSpacing: 0.3, color: RivalColors.onSurfaceVariant, opacity: 0.6, textAlign: 'center', marginTop: 14 },
 
   // Crest reveal — shown once, right after creation, before the team feed.
@@ -1311,8 +1311,8 @@ const styles = StyleSheet.create({
   searchBarInput: { flex: 1 },
   // Icon + label, not icon-only — an icon-only square next to the input was
   // too easy to miss and skip straight to typing the website in by hand.
-  searchBarBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 40, paddingHorizontal: 14, backgroundColor: RivalColors.accentFill, borderRadius: RivalRadius.DEFAULT },
-  searchBarBtnText: { fontSize: 13, fontWeight: '700', color: RivalColors.onAccentFill },
+  searchBarBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 40, paddingHorizontal: 14, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: RivalRadius.DEFAULT },
+  searchBarBtnText: { fontSize: 13, fontWeight: '700', color: RivalButtonColors.label(RivalColors.onAccentFill) },
   openLinkBtn: { height: 40, width: 40, alignItems: 'center', justifyContent: 'center', borderRadius: RivalRadius.DEFAULT, borderWidth: 1, borderColor: 'rgba(217,119,87,0.4)' },
   panelLabel: { ...RivalType.labelCaps, fontSize: 11, color: RivalColors.onSurfaceVariant, opacity: 0.8 },
   panelInput: {
@@ -1420,9 +1420,9 @@ const styles = StyleSheet.create({
   // its own text — that's what read as "floating" in a narrow column, where
   // ragged chip widths left uneven gaps between rows.
   typeChip: { flexGrow: 1, minWidth: 84, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: RivalRadius.full, borderWidth: 1, borderColor: 'rgba(85,67,61,0.3)' },
-  typeChipActive: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
+  typeChipActive: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderColor: RivalButtonColors.fill },
   typeChipText: { fontSize: 13, color: RivalColors.onSurfaceVariant, fontWeight: '600' },
-  typeChipTextActive: { color: RivalColors.onAccentFill },
+  typeChipTextActive: { color: RivalButtonColors.label(RivalColors.onAccentFill) },
   disciplineRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
   disciplineLabel: { flex: 1, fontSize: 14, color: RivalColors.onSurfaceVariant },
   disciplineInput: { width: 100 },
@@ -1434,5 +1434,5 @@ const styles = StyleSheet.create({
   modalActions: { flexDirection: 'row', gap: 12, marginTop: 10 },
   modalCancelBtn: { flex: 1, paddingVertical: 16, borderRadius: RivalRadius.DEFAULT, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' },
   modalCancelText: { color: RivalColors.textSecondary, fontWeight: '700' },
-  modalSaveBtn: { flex: 1, paddingVertical: 16, borderRadius: RivalRadius.DEFAULT, alignItems: 'center', backgroundColor: RivalColors.accentFill },
+  modalSaveBtn: { flex: 1, paddingVertical: 16, borderRadius: RivalRadius.DEFAULT, alignItems: 'center', backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient },
 });

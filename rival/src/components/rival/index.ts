@@ -21,3 +21,5 @@ export { CoverImage } from './CoverImage';
 export type { DiaryActivity } from './ActivityDiaryViewer';
 export type { RivalIconName } from './RivalIcon';
 export { PlanSessionSheet } from './PlanSessionSheet';
+export { TrainingPartners } from './TrainingPartners';
+export { RivalMobileHeader, RivalRowLink, RivalHairline, RivalWarm, rm } from './RivalMobile';

@@ -50,7 +50,7 @@ serve(async (req) => {
       .single()
 
     if (!message || message.user_id !== user.id || message.kind !== 'session') {
-      return new Response(JSON.stringify({ error: 'Session not found' }), {
+      return new Response(JSON.stringify({ error: 'Activity not found' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 404,
       })
@@ -89,8 +89,8 @@ serve(async (req) => {
 
     const messages = (tokens || []).map((t: any) => ({
       to: t.token,
-      title: `${posterName} wants to train 🏃`,
-      body: `${message.activity_type || 'Training'} ${whenText}${locationText}. Join?`,
+      title: `${posterName} planned an activity`,
+      body: `${message.activity_type || 'Training'} ${whenText}${locationText}.`,
       data: { screen: 'league', leagueId: message.league_id, tab: 'sessions' },
       sound: 'default',
     }))

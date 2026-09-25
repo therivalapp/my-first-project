@@ -13,6 +13,7 @@ import { useAppFonts } from '../lib/useAppFonts';
 import { registerForPushNotifications } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { RivalAlertHost } from '../components/rival';
+import { DailyQuoteSplash } from '../components/rival/DailyQuoteSplash';
 
 export default function RootLayout() {
   // Native registers Manrope from bundled .ttf files; web is a no-op because
@@ -123,6 +124,8 @@ export default function RootLayout() {
       >
         <Stack screenOptions={{ headerShown: false }} />
       </View>
+      {/* Once a day, over whichever page opens first — it loads underneath. */}
+      <DailyQuoteSplash />
       <RivalAlertHost />
     </SafeAreaProvider>
   );

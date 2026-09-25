@@ -42,6 +42,9 @@ const ICONS = {
   chevronDown: 'keyboard-arrow-down',
   edit: 'edit',
   more: 'more-vert',
+  // Horizontal three dots — the overflow menu on the diary viewer, matching
+  // Instagram's post menu.
+  moreHoriz: 'more-horiz',
   close: 'close',
   eye: 'visibility',
   eyeOff: 'visibility-off',
@@ -87,6 +90,7 @@ const ICONS = {
   manual: 'edit-note',
   batch: 'calendar-view-week',
   addPhoto: 'add-a-photo',
+  video: 'videocam',
   brain: 'psychology',
   verified: 'verified',
   ai: 'auto-awesome',

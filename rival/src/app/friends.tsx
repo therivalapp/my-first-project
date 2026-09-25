@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { RivalColors } from '../constants/rivalTheme';
-import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, ActivityIndicator } from 'react-native';
+import { RivalColors, RivalButtonColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
+import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { formatDisplayName, IdentityUser } from '../lib/identity';
-import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton} from '../components/rival';
+import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton, RivalMobileHeader, RivalWarm, rm } from '../components/rival';
 
 type UserResult = IdentityUser & {
   id: string;
@@ -27,6 +28,8 @@ function getMondayStart(date: Date) {
 }
 
 export default function FriendsScreen() {
+  const { width } = useWindowDimensions();
+  const wide = width >= BREAKPOINT_WIDE_LAYOUT;
   const [currentUserId, setCurrentUserId] = useState('');
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<UserResult[]>([]);
@@ -164,6 +167,76 @@ export default function FriendsScreen() {
     return formatDisplayName(u);
   }
 
+  if (!wide) {
+    return (
+      <SafeAreaView style={rm.page} edges={['top', 'left', 'right']}>
+        <RivalTopNav active="today" />
+        <ScrollView contentContainerStyle={[rm.content, ms.content]} keyboardShouldPersistTaps="handled">
+          <RivalMobileHeader title="Friends" onBack={() => (router.canGoBack() ? router.back() : router.replace('/home'))} />
+          <Text style={rm.hint}>The people you show up with.</Text>
+
+          <View style={[rm.field, ms.search]}>
+            <RivalIcon name="search" size={18} color={RivalWarm.muted} />
+            <TextInput
+              style={[rm.input, { flex: 1 }]}
+              placeholder="Search by name"
+              placeholderTextColor={RivalColors.textSecondary}
+              value={query}
+              onChangeText={search}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {searching && <ActivityIndicator color={RivalColors.accentText} size="small" />}
+          </View>
+
+          {searchResults.length > 0 && (
+            <View style={[rm.card, ms.list]}>
+              {searchResults.map((user, i) => (
+                <View key={user.id} style={[ms.row, i > 0 && ms.rowDivider]}>
+                  <Text style={ms.name} numberOfLines={1}>{getDisplayName(user)}</Text>
+                  <TouchableOpacity
+                    style={[ms.follow, user.isFollowing && ms.following]}
+                    onPress={() => toggleFollow(user)}
+                    activeOpacity={0.85}
+                  >
+                    {user.isFollowing && <RivalIcon name="check" size={14} color={RivalColors.accentText} />}
+                    <Text style={[ms.followText, user.isFollowing && ms.followingText]}>
+                      {user.isFollowing ? 'Following' : 'Follow'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
+
+          <Text style={[rm.label, ms.section]}>Following · this week</Text>
+
+          {loading && <Text style={[rm.hint, { textAlign: 'center', paddingVertical: 24 }]}>Loading…</Text>}
+
+          {!loading && friends.length === 0 && (
+            <View style={[rm.card, ms.empty]}>
+              <View style={rm.iconCircle}><RivalIcon name="groups" size={20} color={RivalColors.accentText} /></View>
+              <Text style={[rm.hint, { textAlign: 'center' }]}>Search by name to follow people.</Text>
+            </View>
+          )}
+
+          {friends.length > 0 && (
+            <View style={[rm.card, ms.list]}>
+              {friends.map((friend, index) => (
+                <View key={friend.id} style={[ms.row, index > 0 && ms.rowDivider]}>
+                  <Text style={ms.rank}>{index + 1}</Text>
+                  <Text style={ms.name} numberOfLines={1}>{getDisplayName(friend)}</Text>
+                  <Text style={ms.score}>{friend.weekly_score}</Text>
+                  <Text style={ms.unit}>Effort</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
@@ -215,7 +288,7 @@ export default function FriendsScreen() {
         {loading && <Text style={styles.emptyText}>Loading…</Text>}
 
         {!loading && friends.length === 0 && (
-          <Text style={styles.emptyText}>Search for friends above to follow them.</Text>
+          <Text style={styles.emptyText}>Search by name to follow people.</Text>
         )}
 
         {friends.map((friend, index) => (
@@ -300,7 +373,7 @@ const styles = StyleSheet.create({
     color: RivalColors.textPrimary,
   },
   followButton: {
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
     paddingVertical: 7,
     paddingHorizontal: 16,
     borderRadius: 8,
@@ -311,7 +384,7 @@ const styles = StyleSheet.create({
     borderColor: RivalColors.accentFill,
   },
   followButtonText: {
-    color: RivalColors.textPrimary,
+    color: RivalButtonColors.label(RivalColors.textPrimary),
     fontSize: 13,
     fontWeight: '700',
   },
@@ -366,4 +439,28 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: RivalColors.accentFill,
   },
+});
+
+// Mobile only — the RIVAL look (see RivalMobile.tsx).
+const ms = StyleSheet.create({
+  content: { paddingBottom: 120 },
+  search: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  list: { paddingVertical: 4, gap: 0 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+  rowDivider: { borderTopWidth: 1, borderTopColor: RivalWarm.hairline },
+  rank: { width: 18, fontSize: 12.5, fontWeight: '800', color: RivalWarm.muted },
+  name: { flex: 1, minWidth: 0, fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 17, fontWeight: '700', color: '#fff' },
+  score: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 19, fontWeight: '700', color: RivalColors.accentText },
+  unit: { fontSize: 10, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', color: RivalWarm.muted },
+  // A row action stays quiet: outlined to follow, a soft filled pill once
+  // following.
+  follow: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999,
+    borderWidth: 1, borderColor: 'rgba(255,209,190,0.28)',
+  },
+  following: { backgroundColor: 'rgba(255,209,190,0.10)', borderColor: 'transparent' },
+  followText: { fontSize: 13, fontWeight: '800', color: RivalColors.accentText },
+  followingText: { color: RivalColors.accentText },
+  section: { marginTop: 6 },
+  empty: { alignItems: 'center', paddingVertical: 24 },
 });

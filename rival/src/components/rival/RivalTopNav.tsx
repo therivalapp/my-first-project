@@ -345,11 +345,14 @@ export function RivalTopNav({ active, centerSlot, hideBar, action }: {
                 that strip belongs to `row`/`right` (not a descendant of
                 avatarWrap), so crossing it on the way down would fire
                 mouseleave and close the menu before the pointer reaches it. */}
-            {Platform.OS === 'web' && <View style={styles.avatarMenuBridge} />}
+            {Platform.OS === 'web' && <View style={[styles.avatarMenuBridge, narrow && { right: -8 }]} />}
             {Platform.OS === 'web' && (
               <View
                 style={[
                   styles.avatarMenu,
+                  // rowNarrow pads 8, not 20: -20 pushed the (hidden) menu
+                  // 12px past the screen edge on phones.
+                  narrow && { right: -8 },
                   {
                     transform: [{ scaleY: menuOpen ? 1 : 0 }],
                     opacity: menuOpen ? 1 : 0,
@@ -401,7 +404,7 @@ export function RivalTopNav({ active, centerSlot, hideBar, action }: {
                   {...(Platform.OS === 'web' ? { onMouseEnter: () => setHoveredItem('profile'), onMouseLeave: () => setHoveredItem(null) } as any : {})}
                 >
                   <RivalIcon name="person" size={16} color={RivalColors.accentText} />
-                  <Text style={styles.avatarMenuText}>Your Profile</Text>
+                  <Text style={styles.avatarMenuText}>Profile</Text>
                 </TouchableOpacity>
                 {/* No Friends entry: RIVAL's social unit is the Team. A one-way
                     follow makes an audience, not a training partner — and the

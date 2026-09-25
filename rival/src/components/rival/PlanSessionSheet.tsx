@@ -3,7 +3,7 @@ import { Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpac
 import { supabase } from '../../lib/supabase';
 import { confirmAction, notify } from '../../lib/notify';
 import { displayToIsoDate, isoToDisplayDate } from '../../lib/dateFormat';
-import { RivalColors, RivalSerifFamily } from '../../constants/rivalTheme';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../../constants/rivalTheme';
 import { RivalIcon, activityIconName } from './RivalIcon';
 import { RivalCalendarGrid } from './RivalCalendarGrid';
 
@@ -218,7 +218,7 @@ export function PlanSessionSheet({
   async function post() {
     if (!currentUserId || posting || !canPost) return;
     if (!resolvedType) {
-      notify('Activity needed', 'Choose an activity, or name your own.');
+      notify('Activity needed', 'Choose an activity or enter a custom name.');
       return;
     }
     let scheduledAt: Date;
@@ -272,7 +272,7 @@ export function PlanSessionSheet({
 
     if (error || !inserted) {
       setPosting(false);
-      notify("Couldn't plan that session", error?.message || 'Please try again.');
+      notify("Couldn't plan that activity", error?.message || 'Try again.');
       return;
     }
 
@@ -500,7 +500,7 @@ export function PlanSessionSheet({
             disabled={posting || !canPost}
           >
             <Text style={styles.postBtnText}>
-              {posting ? 'Saving…' : editing ? 'Save changes' : 'Post to the team'}
+              {posting ? 'Saving…' : editing ? 'Save changes' : 'Post to team'}
             </Text>
           </TouchableOpacity>
 
@@ -514,7 +514,7 @@ export function PlanSessionSheet({
               onPress={async () => {
                 const ok = await confirmAction({
                   title: 'Cancel this activity?',
-                  message: 'It will be removed for the whole team, along with everyone who said they were coming.',
+                  message: 'It will be removed for the whole team, along with all RSVPs.',
                   confirmLabel: 'Cancel activity',
                   cancelLabel: 'Keep it',
                   destructive: true,
@@ -805,10 +805,10 @@ const styles = StyleSheet.create({
   wheelTextOn: { fontSize: 22, fontWeight: '700', color: '#fff' },
   wheelColon: { fontSize: 22, fontWeight: '600', color: '#fff', alignSelf: 'center', marginBottom: 2 },
   timeDone: {
-    marginTop: 2, backgroundColor: RivalColors.accentFill, borderRadius: 999,
+    marginTop: 2, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: 999,
     paddingVertical: 12, alignItems: 'center',
   },
-  timeDoneText: { fontSize: 14, fontWeight: '800', color: RivalColors.surfaceLowest },
+  timeDoneText: { fontSize: 14, fontWeight: '800', color: RivalButtonColors.label(RivalColors.surfaceLowest) },
 
   calendarCard: {
     width: '100%', maxWidth: 340, overflow: 'hidden',
@@ -817,12 +817,12 @@ const styles = StyleSheet.create({
   },
 
   postBtn: {
-    marginTop: 16, backgroundColor: RivalColors.accentFill, borderRadius: 999,
+    marginTop: 16, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: 999,
     paddingVertical: 15, alignItems: 'center',
     ...(Platform.OS === 'web' ? { boxShadow: '0 6px 22px rgba(217,119,87,0.32)' } : {}),
   },
   postBtnOff: { opacity: 0.5 },
-  postBtnText: { fontSize: 15, fontWeight: '800', color: RivalColors.surfaceLowest, letterSpacing: 0.2 },
+  postBtnText: { fontSize: 15, fontWeight: '800', color: RivalButtonColors.label(RivalColors.surfaceLowest), letterSpacing: 0.2 },
   cancelBtn: { paddingVertical: 12, alignItems: 'center' },
   cancelBtnText: { fontSize: 13, fontWeight: '700', color: RivalColors.textSecondary },
 

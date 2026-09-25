@@ -4,7 +4,14 @@ import { supabase, getAuthUser } from './supabase';
 // see supabase/add_inbox_triggers.sql — so everything here reads, marks read,
 // or resolves. Nothing inserts.
 
-export type InboxKind = 'reaction' | 'comment' | 'join_request' | 'short_activity' | 'team_joined';
+export type InboxKind =
+  | 'reaction'
+  | 'comment'
+  | 'join_request'
+  | 'short_activity'
+  | 'team_joined'
+  | 'activity_tag'
+  | 'tag_accepted';
 
 export type InboxItem = {
   id: string;
@@ -27,7 +34,7 @@ const COLUMNS =
 // Kinds that ask a question. An informational item is done the moment it has
 // been seen; one of these stays open until it is actually answered, which is
 // why `resolved_at` is tracked separately from `read_at`.
-const ACTIONABLE: InboxKind[] = ['join_request', 'short_activity'];
+const ACTIONABLE: InboxKind[] = ['join_request', 'short_activity', 'activity_tag'];
 
 export function isActionable(item: InboxItem): boolean {
   return ACTIONABLE.includes(item.kind) && !item.resolved_at;
@@ -151,5 +158,36 @@ export async function respondToShortActivity(
     const { error } = await supabase.from('activities').delete().eq('id', item.subject_id);
     if (error) return { ok: false, error: error.message };
   }
+  return resolveItem(item.id, 'acted');
+}
+
+// Confirm or refuse that you were on somebody else's session.
+//
+// Accepting goes through an RPC rather than an insert: the activity it creates
+// carries real Effort, so its numbers are copied from the original inside the
+// database. If the app built that row, "I was there too" would mean "here is an
+// activity worth whatever I claim".
+//
+// Declining is silent by design — the person who tagged you is told nothing.
+// Anything else turns a question into an obligation.
+export async function respondToActivityTag(
+  item: InboxItem,
+  accept: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!item.subject_id) return { ok: false, error: 'That activity is no longer available.' };
+
+  if (accept) {
+    const { error } = await supabase.rpc('accept_activity_tag', { p_id: item.subject_id });
+    if (error) return { ok: false, error: error.message };
+    inboxChanged();
+    return resolveItem(item.id, 'acted');
+  }
+
+  const { error } = await supabase
+    .from('activity_participants')
+    .update({ status: 'declined', responded_at: new Date().toISOString() })
+    .eq('id', item.subject_id)
+    .eq('status', 'pending');
+  if (error) return { ok: false, error: error.message };
   return resolveItem(item.id, 'acted');
 }

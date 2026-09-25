@@ -38,7 +38,7 @@ import { SessionCard } from '../components/rival/SessionCard';
 import { TeamChallengesTab, ChallengeTeammateSheet } from '../components/rival/team/TeamChallengesTab';
 import { WeeklyStandings } from '../components/rival/team/WeeklyStandings';
 import { EncourageSheet, loadEncouragedToday } from '../components/rival/team/EncourageSheet';
-import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { matchCanonicalLift } from './scan-workout';
 
 // Matches chat.tsx's SESSION_GRACE_MS — a session stays "upcoming" for 12
@@ -349,12 +349,12 @@ export default function TeamHub() {
     if (joined) {
       const { error } = await supabase.from('league_session_rsvps')
         .delete().eq('message_id', messageId).eq('user_id', currentUserId);
-      if (error) { notify("Couldn't update your RSVP", error.message); loadSessions(); return; }
+      if (error) { notify("Couldn't update RSVP", error.message); loadSessions(); return; }
       setSessionRsvps(prev => ({ ...prev, [messageId]: (prev[messageId] || []).filter(u => u !== currentUserId) }));
     } else {
       const { error } = await supabase.from('league_session_rsvps')
         .insert({ message_id: messageId, user_id: currentUserId });
-      if (error) { notify("Couldn't update your RSVP", error.message); loadSessions(); return; }
+      if (error) { notify("Couldn't update RSVP", error.message); loadSessions(); return; }
       setSessionRsvps(prev => ({ ...prev, [messageId]: [...(prev[messageId] || []), currentUserId] }));
     }
   }
@@ -578,7 +578,7 @@ export default function TeamHub() {
       .single();
     setPostingBoard(false);
     if (error || !inserted) {
-      setBoardError(error?.message || "Couldn't post — try again.");
+      setBoardError(error?.message || "Couldn't post. Try again.");
       return;
     }
     setBoardTitleDraft('');
@@ -654,7 +654,7 @@ export default function TeamHub() {
     const title = noteTitleDraft.trim();
     const body = noteBodyDraft.trim();
     if (!body) {
-      notify('Add some text', 'A note needs a message before it can be saved.');
+      notify('Message required before saving.');
       return;
     }
     setSavingNote(true);
@@ -913,7 +913,7 @@ export default function TeamHub() {
                       style={styles.boardComposeBodyInput}
                       value={boardBodyDraft}
                       onChangeText={setBoardBodyDraft}
-                      placeholder="Anyone have a wetsuit for sale? Run meetup times?…"
+                      placeholder="Post a Team note"
                       placeholderTextColor="rgba(255,255,255,0.4)"
                       multiline
                     />
@@ -1013,19 +1013,19 @@ export default function TeamHub() {
                       <View style={{ flex: 1 }}>
                         {!hasPaceData ? (
                           <>
-                            <Text style={styles.paceTitle}>Just getting started</Text>
-                            <Text style={styles.paceSub}>Every activity logged from here counts toward the goal.</Text>
+                            <Text style={styles.paceTitle}>Challenge started</Text>
+                            <Text style={styles.paceSub}>Every logged activity counts toward the goal.</Text>
                           </>
                         ) : paceDeltaPct >= 0 ? (
                           <>
-                            <Text style={styles.paceTitle}>Keep it up!</Text>
+                            <Text style={styles.paceTitle}>On pace</Text>
                             <Text style={styles.paceSub}>
                               <Text style={styles.paceSubBold}>{paceDeltaPct}% ahead</Text> of the pace needed to hit the goal.
                             </Text>
                           </>
                         ) : (
                           <>
-                            <Text style={styles.paceTitle}>Let's pick it up</Text>
+                            <Text style={styles.paceTitle}>Behind pace</Text>
                             <Text style={styles.paceSub}>
                               Needs <Text style={styles.paceSubBold}>{(Math.round(neededPerDay * 10) / 10).toLocaleString()} {unit}/day</Text> to hit the goal.
                             </Text>
@@ -1150,8 +1150,8 @@ export default function TeamHub() {
                 <TouchableOpacity style={[styles.planWeekLink, warmCardWeb]} onPress={() => router.push('/plan')}>
                   <RivalIcon name="stats" size={18} color={RivalColors.accentText} />
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.planWeekTitle}>Plan your week</Text>
-                    <Text style={styles.planWeekSub}>See where you'll finish in the standings.</Text>
+                    <Text style={styles.planWeekTitle}>Weekly plan</Text>
+                    <Text style={styles.planWeekSub}>Projected standings for the week.</Text>
                   </View>
                   <RivalIcon name="chevronRight" size={18} color={RivalColors.textSecondary} />
                 </TouchableOpacity>
@@ -1159,14 +1159,14 @@ export default function TeamHub() {
                 {/* Above Recent Activity on purpose: what the team is about to
                     do is more actionable than what it already did. */}
                 <View style={styles.sectionHead}>
-                  <Text style={styles.sectionTitle}>Coming Up</Text>
+                  <Text style={styles.sectionTitle}>Upcoming</Text>
                   <TouchableOpacity style={styles.planBtn} onPress={() => setPlanning(true)}>
                     <RivalIcon name="calendar" size={14} color={RivalColors.accentText} />
-                    <Text style={styles.planBtnText}>Plan an Activity</Text>
+                    <Text style={styles.planBtnText}>Plan activity</Text>
                   </TouchableOpacity>
                 </View>
                 {sessions.length === 0 ? (
-                  <Text style={styles.emptyText}>No sessions planned yet.</Text>
+                  <Text style={styles.emptyText}>No activities planned.</Text>
                 ) : (
                   <View style={{ gap: 10 }}>
                     {sessions.map((sn) => (
@@ -1279,7 +1279,7 @@ export default function TeamHub() {
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text style={styles.inviteLabel}>INVITE CODE</Text>
                       <Text style={styles.inviteCode} selectable>{league.invite_code}</Text>
-                      <Text style={styles.inviteSub}>Share it so teammates can join.</Text>
+                      <Text style={styles.inviteSub}>Share this code to invite new teammates.</Text>
                     </View>
                     <TouchableOpacity style={styles.inviteBtn} onPress={copyInviteCode} accessibilityLabel="Copy invite code">
                       <Text style={styles.inviteBtnText}>{codeCopied ? 'Copied' : 'Copy'}</Text>
@@ -1609,7 +1609,7 @@ function ActivityPostCard({
       ) : (
         <View style={styles.noPhotoPanel}>
           <RivalIcon name={activityIconName(a.activity_type)} size={28} color={RivalColors.accentText} />
-          <Text style={styles.noPhotoBody}>No photo this time, still counts.</Text>
+          <Text style={styles.noPhotoBody}>No photo added</Text>
         </View>
       )}
 
@@ -1749,9 +1749,9 @@ const styles = StyleSheet.create({
   inviteSub: { fontSize: 12.5, color: RivalColors.textSecondary, marginTop: 2 },
   inviteBtn: {
     minWidth: 84, minHeight: 44, paddingHorizontal: 16, borderRadius: 999, alignItems: 'center', justifyContent: 'center',
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
   },
-  inviteBtnText: { fontSize: 14, fontWeight: '800', color: RivalColors.surfaceLowest },
+  inviteBtnText: { fontSize: 14, fontWeight: '800', color: RivalButtonColors.label(RivalColors.surfaceLowest) },
   leaveBtn: {
     minHeight: 48, borderRadius: 999, alignItems: 'center', justifyContent: 'center',
     borderWidth: 1, borderColor: 'rgba(255,155,143,0.35)',
@@ -1809,8 +1809,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(255,255,255,0.14)', backgroundColor: 'rgba(255,255,255,0.04)',
   },
   noteActionText: { fontSize: 14, fontWeight: '700', color: 'rgba(255,255,255,0.9)' },
-  noteActionPrimary: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
-  noteActionPrimaryText: { fontSize: 14, fontWeight: '800', color: RivalColors.surfaceLowest },
+  noteActionPrimary: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderColor: RivalButtonColors.fill },
+  noteActionPrimaryText: { fontSize: 14, fontWeight: '800', color: RivalButtonColors.label(RivalColors.surfaceLowest) },
   boardGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start', columnGap: '3%', rowGap: 10 },
   boardNote: { width: '48.5%', backgroundColor: CARD_BG, borderWidth: 1, borderColor: CARD_BORDER, borderRadius: 16, padding: 10, gap: 4, position: 'relative' },
   boardPin: { position: 'absolute', top: -5, left: '50%', marginLeft: -5, width: 10, height: 10, borderRadius: 5 },

@@ -12,8 +12,9 @@ import { formatDisplayName, formatTeamName, formatRaceName } from '../lib/identi
 import { formatDuration } from '../lib/format';
 import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone } from '../lib/activityInsights';
 import { matchCanonicalLift } from './scan-workout';
-import { RivalTopNav, RivalIcon, RivalIconName, activityIconName } from '../components/rival';
-import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalTopNav, RivalIcon, RivalIconName, activityIconName, TrainingPartners } from '../components/rival';
+import { withinTagWindow } from '../lib/tagWindow';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
 // Combined multi-team activity feed — separate destination from league.tsx's
@@ -135,6 +136,12 @@ type FeedPost =
       insight: ActivityInsight | null;
       teamIds: string[];
       teamNames: string[];
+      // Who else confirmed they were on the session, as the database keeps it
+      // (see sync_activity_companions). Null when nobody has been added.
+      companions: string | null;
+      // A copy someone received by being tagged: a record of who they were
+      // with, never a session they can add people to.
+      isSharedCopy: boolean;
     }
   | {
       // One card per person per day gathering their auto-synced walks,
@@ -265,6 +272,8 @@ function activityRowToPost(ctx: FeedContext, a: any): FeedPost | null {
     insight,
     teamIds: posterTeams,
     teamNames: posterTeams.map((tid) => ctx.teamNameById[tid] ?? ''),
+    companions: a.companions ?? null,
+    isSharedCopy: !!a.shared_from_activity_id,
   };
 }
 
@@ -289,7 +298,7 @@ const byNewestFirst = (a: FeedPost, b: FeedPost) => new Date(b.ts).getTime() - n
 // mid-scroll (an offset would shift and duplicate rows; a cursor won't).
 async function fetchActivityPage(ctx: FeedContext, cursor: string | null) {
   let q = supabase.from('activities')
-    .select('id, user_id, name, activity_type, provider, started_at, duration_seconds, distance_meters, effort_score, exercises, notes, photo_url')
+    .select('id, user_id, name, activity_type, provider, started_at, duration_seconds, distance_meters, effort_score, exercises, notes, photo_url, companions, shared_from_activity_id')
     .in('user_id', ctx.memberIds)
     .order('started_at', { ascending: false })
     .limit(PAGE_SIZE + 1);
@@ -629,14 +638,14 @@ export default function TeamFeedScreen() {
           ) : teams.length === 0 ? (
             <View style={styles.emptyState}>
               <RivalIcon name="groups" size={28} color={RivalColors.accentText} />
-              <Text style={styles.emptyTitle}>You're not on a team yet</Text>
-              <Text style={styles.emptyBody}>Join or create a team to see everyone's Effort here.</Text>
+              <Text style={styles.emptyTitle}>No team yet</Text>
+              <Text style={styles.emptyBody}>Join or create a team to see team activity here.</Text>
               <TouchableOpacity style={styles.emptyBtn} onPress={() => router.push('/discover-leagues')}>
-                <Text style={styles.emptyBtnText}>Find a Team</Text>
+                <Text style={styles.emptyBtnText}>Find a team</Text>
               </TouchableOpacity>
             </View>
           ) : posts.length === 0 ? (
-            <Text style={styles.stateText}>No activity yet — your teams' Effort will show up here.</Text>
+            <Text style={styles.stateText}>No activity yet. Team activity appears here.</Text>
           ) : (
             <View style={{ gap: 20 }}>
               {posts.map((post) => (
@@ -783,9 +792,15 @@ function PostCard({
         <TouchableOpacity onPress={() => router.push(`/stats?userId=${post.userId}` as any)} style={[styles.postAvatar, { backgroundColor: tint.bg, borderColor: tint.color }]}>
           {avatarUrl ? <Image source={{ uri: avatarUrl }} style={styles.postAvatarImg} /> : <Text style={[styles.postAvatarText, { color: tint.color }]}>{initials}</Text>}
         </TouchableOpacity>
-        {/* The name opens their profile too, not just the small avatar. */}
-        <TouchableOpacity style={{ flex: 1, minWidth: 0 }} activeOpacity={0.7} onPress={() => router.push(`/stats?userId=${post.userId}` as any)}>
-          <Text style={styles.postName}>{displayedName}</Text>
+        {/* The name opens their profile too, not just the small avatar — but
+            only the name. This used to be one flex:1 touchable holding the name
+            AND the meta line, which made the whole header strip, edge to edge,
+            a profile link. The meta line describes the activity, not the
+            person, so it is not a link at all. */}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <TouchableOpacity style={styles.postNameHit} activeOpacity={0.7} onPress={() => router.push(`/stats?userId=${post.userId}` as any)}>
+            <Text style={styles.postName}>{displayedName}</Text>
+          </TouchableOpacity>
           <Text style={styles.postMeta}>
             {post.kind === 'race'
               ? 'Signed up for a race'
@@ -796,7 +811,7 @@ function PostCard({
               <> · <Text style={styles.postTeamTag}>{primaryTeamName}{extraTeamCount > 0 ? ` +${extraTeamCount}` : ''}</Text></>
             ) : null}
           </Text>
-        </TouchableOpacity>
+        </View>
         {post.kind === 'activity' && post.userId === currentUserId && (
           <View style={styles.postMoreWrap}>
             <TouchableOpacity style={styles.postMoreBtn} onPress={() => setMenuOpen((v) => !v)} disabled={deleting}>
@@ -889,12 +904,25 @@ function PostCard({
             && post.durationSeconds < LIKELY_MISTAKE_UNDER_SECONDS ? (
             <TouchableOpacity onPress={deleteThisActivity} disabled={deleting} activeOpacity={0.7}>
               <Text style={styles.tooShortOffer}>
-                {deleting ? 'Removing…' : 'Too short to count? Remove it'}
+                {deleting ? 'Removing…' : 'Remove short activity'}
               </Text>
             </TouchableOpacity>
           ) : null}
         </>
       )}
+
+      {/* Who else was there. The owner can add people for as long as the
+          database allows tagging; everyone else sees the confirmed names. */}
+      {post.kind === 'activity' ? (
+        post.userId === currentUserId && !post.isSharedCopy && withinTagWindow(post.ts) ? (
+          <TrainingPartners activityId={post.id} startedAt={post.ts} companions={post.companions} />
+        ) : post.companions ? (
+          <View style={styles.partnersLine}>
+            <RivalIcon name="groups" size={12} color="rgba(255,255,255,0.5)" />
+            <Text style={styles.partnersText} numberOfLines={2}>with {post.companions}</Text>
+          </View>
+        ) : null
+      ) : null}
 
       {post.kind === 'activity' && post.notes ? <Text style={styles.caption}>{post.notes}</Text> : null}
 
@@ -966,8 +994,8 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', gap: 8, paddingVertical: 32, paddingHorizontal: 20 },
   emptyTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 17, color: '#fff', marginTop: 4 },
   emptyBody: { fontSize: 13, color: RivalColors.textSecondary, textAlign: 'center' },
-  emptyBtn: { marginTop: 8, backgroundColor: RivalColors.accentFill, borderRadius: 999, paddingVertical: 10, paddingHorizontal: 20 },
-  emptyBtnText: { fontSize: 13, fontWeight: '800', color: RivalColors.onAccentFill },
+  emptyBtn: { marginTop: 8, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: 999, paddingVertical: 10, paddingHorizontal: 20 },
+  emptyBtnText: { fontSize: 13, fontWeight: '800', color: RivalButtonColors.label(RivalColors.onAccentFill) },
 
   railWrap: { position: 'relative', marginTop: 10 },
   rail: { flexGrow: 0 },
@@ -1039,6 +1067,8 @@ const styles = StyleSheet.create({
   postAvatar: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, overflow: 'hidden' },
   postAvatarImg: { width: 36, height: 36, borderRadius: 18 },
   postAvatarText: { fontSize: 12.5, fontWeight: '800' },
+  // Shrinks to the name's own width instead of stretching across the row.
+  postNameHit: { alignSelf: 'flex-start' },
   postName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 15, color: '#fff' },
   postMeta: { fontSize: 11, color: 'rgba(255,255,255,0.55)', marginTop: 1 },
   postTeamTag: { color: RivalColors.accentText, fontWeight: '600' },
@@ -1055,6 +1085,8 @@ const styles = StyleSheet.create({
   effortNum: { fontSize: 19, fontWeight: '800', color: RivalColors.accentText, lineHeight: 20 },
   effortUnit: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 9, letterSpacing: 0.4, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', marginTop: 1 },
 
+  partnersLine: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  partnersText: { flex: 1, fontSize: 13, fontWeight: '600', color: 'rgba(255,255,255,0.55)' },
   caption: { fontSize: 12.5, color: RivalColors.onSurface, lineHeight: 18, paddingHorizontal: 2 },
 
   noPhotoPanel: {

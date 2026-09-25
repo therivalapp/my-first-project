@@ -1,13 +1,14 @@
 import { useState, useCallback } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { computeGoalProgress } from '../lib/goalProgress';
 import { confirmAction, notify } from '../lib/notify';
-import { RivalTopNav, RivalIcon, RivalPageHeader, RivalBackButton, RivalDateField } from '../components/rival';
-import { RivalColors, RivalRadius, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalTopNav, RivalIcon, RivalPageHeader, RivalBackButton, RivalDateField, RivalMobileHeader, RivalWarm, rm, activityIconName, type RivalIconName } from '../components/rival';
+import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
+import { RivalColors, RivalRadius, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 
 type Goal = {
   id: string;
@@ -24,19 +25,25 @@ type Goal = {
 const GOAL_LABELS: Record<string, string> = {
   distance: 'Distance',
   elevation: 'Elevation',
-  gym_sessions: 'Gym Sessions',
+  gym_sessions: 'Gym activities',
 };
 
 const GOAL_UNITS: Record<string, string> = {
   distance: 'km',
   elevation: 'm',
-  gym_sessions: 'sessions',
+  gym_sessions: 'activities',
 };
 
 const GOAL_ABBR: Record<string, string> = {
   distance: 'KM',
   elevation: 'ELEV',
   gym_sessions: 'GYM',
+};
+
+const GOAL_ICON: Record<string, RivalIconName> = {
+  distance: 'distance',
+  elevation: 'elevation',
+  gym_sessions: 'weights',
 };
 
 const GOAL_BAR_COLOR: Record<string, string> = {
@@ -110,7 +117,7 @@ function endedMessage(goal: Goal): string {
   const unit = GOAL_UNITS[goal.goal_type];
   const remaining = Math.round((goal.target_value - goal.progress) * 10) / 10;
   const period = goal.period_type === 'week' ? 'this week' : 'this month';
-  return `You were ${remaining} ${unit} away from finishing your previous goal. Let's try again ${period} — you got this.`;
+  return `The previous goal finished ${remaining} ${unit} short. A new goal period starts ${period}.`;
 }
 
 function getEncouragement(progress: number, target: number, unit: string, goalId: string): string | null {
@@ -122,12 +129,12 @@ function getEncouragement(progress: number, target: number, unit: string, goalId
   }
   const remaining = Math.round((target - progress) * 10) / 10;
   if (remaining <= 0) return null;
-  if (remaining <= target * 0.05) return `Almost there — just ${remaining} ${unit} to go!`;
+  if (remaining <= target * 0.05) return `Almost there, just ${remaining} ${unit} to go!`;
   if (remaining <= target * 0.15) return `So close! Only ${remaining} ${unit} left.`;
-  if (pct >= 0.75) return `Nearly there — ${remaining} ${unit} to go. Keep pushing!`;
+  if (pct >= 0.75) return `Nearly there, ${remaining} ${unit} to go. Keep pushing!`;
   if (pct >= 0.5) return `Great work, you're over halfway! ${remaining} ${unit} remaining.`;
   if (pct >= 0.25) return `Good progress! ${remaining} ${unit} to go.`;
-  return `Keep it up — ${remaining} ${unit} to go!`;
+  return `Keep it up, ${remaining} ${unit} to go`;
 }
 
 function ProgressBar({
@@ -135,11 +142,16 @@ function ProgressBar({
   target,
   color,
   unit,
+  trackColor,
+  hidePct = false,
 }: {
   progress: number;
   target: number;
   color: string;
   unit: string;
+  trackColor?: string;
+  // Mobile shows the percentage beside the big number instead.
+  hidePct?: boolean;
 }) {
   const rawPct = progress / target;
   const pct = Math.min(rawPct, 1);
@@ -177,7 +189,7 @@ function ProgressBar({
         </View>
       )}
 
-      <View style={styles.barTrack}>
+      <View style={[styles.barTrack, trackColor ? { backgroundColor: trackColor } : null]}>
         <View style={[styles.barFill, { width: done ? '100%' : `${pct * 100}%`, backgroundColor: color }]} />
 
         {checkpoints.map((cp) => {
@@ -196,7 +208,7 @@ function ProgressBar({
 
       <View style={styles.barLabels}>
         <Text style={styles.barLabelStart}>0</Text>
-        <Text style={[styles.barLabelProgress, { color: done ? RivalColors.accentGold : color }]}>{displayPct}%</Text>
+        {hidePct ? null : <Text style={[styles.barLabelProgress, { color: done ? RivalColors.accentGold : color }]}>{displayPct}%</Text>}
         <Text style={styles.barLabelEnd}>{target}</Text>
       </View>
     </View>
@@ -220,6 +232,9 @@ export default function GoalsScreen() {
   // ORIGINAL period/dates to decide whether the goal's window should be
   // recomputed — see saveGoal.
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
+
+  const { width } = useWindowDimensions();
+  const wide = width >= BREAKPOINT_WIDE_LAYOUT;
 
   useFocusEffect(useCallback(() => { load(); }, []));
 
@@ -416,7 +431,7 @@ export default function GoalsScreen() {
     const { error: delErr } = await supabase.from('goals').delete().eq('id', goal.id);
     if (delErr) {
       // The new goal exists, so nothing is lost; the old one just lingers.
-      notify('Started a fresh goal', 'The finished one could not be cleared away — you may see both for now.');
+      notify('Started a fresh goal', 'The completed goal could not be removed and may still appear.');
     }
     load();
   }
@@ -429,6 +444,249 @@ export default function GoalsScreen() {
 
   const filterOptions = goalType === 'elevation' ? ELEVATION_FILTERS : DISTANCE_FILTERS;
 
+  // The add/edit sheet is shared by both layouts; on mobile it takes the warm
+  // palette so it reads as part of the same screen rather than a grey form.
+  const m = !wide;
+  const sheet = (
+    <Modal visible={showAdd} transparent animationType="slide">
+      <View style={styles.modalOverlay}>
+        <ScrollView style={[styles.modalScroll, m && ms.sheetScroll]} contentContainerStyle={[styles.modalCard, m && ms.sheet]}>
+          <Text style={m ? rm.serifTitleSm : styles.modalTitle}>{editingGoal ? (m ? 'Edit goal' : 'Edit Goal') : (m ? 'New goal' : 'New Goal')}</Text>
+
+          <Text style={m ? rm.label : styles.modalLabel}>Type</Text>
+          <View style={styles.segmentRow}>
+            {(['distance', 'elevation', 'gym_sessions'] as const).map((t) => (
+              <TouchableOpacity
+                key={t}
+                style={[styles.segment, m && ms.chip, goalType === t && styles.segmentActive]}
+                onPress={() => { setGoalType(t); setActivityFilter(null); }}
+              >
+                <Text style={[styles.segmentText, goalType === t && styles.segmentTextActive]}>
+                  {GOAL_LABELS[t]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {goalType !== 'gym_sessions' && (
+            <>
+              <Text style={m ? rm.label : styles.modalLabel}>Activity</Text>
+              <View style={styles.segmentRow}>
+                {filterOptions.map((opt) => (
+                  <TouchableOpacity
+                    key={String(opt.value)}
+                    style={[styles.segment, m && ms.chip, activityFilter === opt.value && styles.segmentActive]}
+                    onPress={() => setActivityFilter(opt.value)}
+                  >
+                    <Text style={[styles.segmentText, activityFilter === opt.value && styles.segmentTextActive]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          )}
+
+          <Text style={m ? rm.label : styles.modalLabel}>Target ({GOAL_UNITS[goalType]})</Text>
+          <TextInput
+            style={m ? [rm.field, rm.input] : styles.modalInput}
+            placeholder={goalType === 'distance' ? '100' : goalType === 'elevation' ? '5000' : '12'}
+            placeholderTextColor={RivalColors.textSecondary}
+            value={targetValue}
+            onChangeText={setTargetValue}
+            keyboardType="decimal-pad"
+          />
+
+          <Text style={m ? rm.label : styles.modalLabel}>Period</Text>
+          <View style={styles.segmentRow}>
+            {(['week', 'month', 'custom'] as const).map((p) => (
+              <TouchableOpacity
+                key={p}
+                style={[styles.segment, m && ms.chip, periodType === p && styles.segmentActive]}
+                onPress={() => setPeriodType(p)}
+              >
+                <Text style={[styles.segmentText, periodType === p && styles.segmentTextActive]}>
+                  {p.charAt(0).toUpperCase() + p.slice(1)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {periodType === 'custom' && (
+            <>
+              <Text style={m ? rm.label : styles.modalLabel}>End date</Text>
+              <RivalDateField value={customEndDate} onChangeText={setCustomEndDate} placeholder="2026-12-31" inputStyle={m ? [rm.field, rm.input] as any : styles.modalInput} />
+            </>
+          )}
+
+          {m ? (
+            <View style={ms.sheetActions}>
+              <TouchableOpacity
+                style={[rm.primary, (!targetValue || saving) && rm.disabled]}
+                onPress={saveGoal}
+                disabled={!targetValue || saving}
+                activeOpacity={0.85}
+              >
+                <Text style={rm.primaryText}>{saving ? 'Saving…' : editingGoal ? 'Save changes' : 'Save goal'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={rm.ghost} onPress={closeForm} activeOpacity={0.85}>
+                <Text style={rm.ghostText}>Cancel</Text>
+              </TouchableOpacity>
+              {editingGoal && (
+                <TouchableOpacity style={ms.deleteLink} onPress={() => deleteGoal(editingGoal.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <RivalIcon name="delete" size={15} color={RivalColors.error} />
+                  <Text style={ms.deleteLinkText}>Delete goal</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            <>
+              {editingGoal && (
+                <TouchableOpacity style={styles.deleteGoalButton} onPress={() => deleteGoal(editingGoal.id)}>
+                  <RivalIcon name="delete" size={16} color={RivalColors.error} />
+                  <Text style={styles.deleteGoalButtonText}>Delete Goal</Text>
+                </TouchableOpacity>
+              )}
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={closeForm}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.saveButton, (!targetValue || saving) && styles.saveButtonDisabled]}
+                  onPress={saveGoal}
+                  disabled={!targetValue || saving}
+                >
+                  <Text style={styles.saveButtonText}>{saving ? 'Saving…' : editingGoal ? 'Save Changes' : 'Save Goal'}</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+
+  if (!wide) {
+    return (
+      <SafeAreaView style={rm.page} edges={['top', 'left', 'right']}>
+        <RivalTopNav active="today" />
+        <ScrollView contentContainerStyle={[rm.content, ms.content]}>
+          <RivalMobileHeader title="Goals" onBack={() => (router.canGoBack() ? router.back() : router.replace('/home'))} />
+
+          {!loading && goals.length === 0 ? (
+            <View style={[rm.hero, ms.empty]}>
+              <View style={rm.iconCircle}>
+                <RivalIcon name="target" size={20} color={RivalColors.accentText} />
+              </View>
+              <Text style={rm.serifTitleSm}>No goals yet</Text>
+              <Text style={[rm.hint, { textAlign: 'center' }]}>
+                Set a distance, elevation or gym goal for a week, a month or a custom date. Up to three at a time.
+              </Text>
+            </View>
+          ) : (
+            <Text style={rm.hint}>Up to three goals. The pinned goal appears on Home.</Text>
+          )}
+
+          {loading && <Text style={[rm.hint, { textAlign: 'center', paddingVertical: 24 }]}>Loading…</Text>}
+
+          {goals.map((goal) => {
+            const unit = GOAL_UNITS[goal.goal_type];
+            const done = goal.progress >= goal.target_value;
+            const ended = !done && isGoalEnded(goal);
+            const encouragement = getEncouragement(goal.progress, goal.target_value, unit, goal.id);
+            const pct = Math.min(100, Math.round((goal.progress / goal.target_value) * 100));
+            const accent = done ? RivalColors.accentGold : RivalColors.accentText;
+            const icon = goal.activity_filter ? activityIconName(goal.activity_filter) : GOAL_ICON[goal.goal_type];
+            return (
+              // Whole card opens the editor; the pin is its own target inside.
+              <TouchableOpacity
+                key={goal.id}
+                activeOpacity={0.85}
+                onPress={() => openEdit(goal)}
+                style={[goal.pinned ? rm.hero : rm.card, done && ms.cardDone]}
+              >
+                <View style={ms.goalTop}>
+                  <View style={rm.iconCircle}>
+                    <RivalIcon name={icon} size={20} color={accent} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    {/* A gym goal has no activity filter, so its type is the title. */}
+                    <Text style={rm.label}>{goal.goal_type === 'gym_sessions' ? periodLabel(goal) : `${GOAL_LABELS[goal.goal_type]} · ${periodLabel(goal)}`}</Text>
+                    <Text style={rm.serifTitleSm} numberOfLines={1}>{goal.goal_type === 'gym_sessions' ? 'Gym activities' : activityLabel(goal.activity_filter)}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => togglePin(goal)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    style={[ms.pinBtn, goal.pinned && ms.pinBtnOn]}
+                    accessibilityLabel={goal.pinned ? 'Unpin from Home' : 'Pin to Home'}
+                  >
+                    <RivalIcon name="pin" size={16} color={goal.pinned ? RivalColors.accentText : RivalWarm.muted} />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={ms.numbers}>
+                  <Text style={[ms.progressNum, { color: done ? RivalColors.accentGold : '#fff' }]}>{goal.progress}</Text>
+                  <Text style={ms.progressOf}> / {goal.target_value} {unit}</Text>
+                  <View style={{ flex: 1 }} />
+                  <Text style={[ms.pct, { color: accent }]}>{pct}%</Text>
+                </View>
+
+                <ProgressBar
+                  progress={goal.progress}
+                  target={goal.target_value}
+                  color={done ? RivalColors.accentGold : RivalColors.accentText}
+                  unit={unit}
+                  trackColor="rgba(255,255,255,0.08)"
+                  hidePct
+                />
+
+                {done ? (
+                  <View style={ms.doneBlock}>
+                    <Text style={[rm.label, { color: RivalColors.accentGold }]}>Goal complete!</Text>
+                    <Text style={ms.message}>You crushed it! Set new goal to keep the momentum going.</Text>
+                  </View>
+                ) : ended ? (
+                  <View style={ms.doneBlock}>
+                    <Text style={ms.message}>{endedMessage(goal)}</Text>
+                    <TouchableOpacity style={rm.ghost} onPress={() => tryAgainGoal(goal)} activeOpacity={0.85}>
+                      <RivalIcon name="refresh" size={16} color={RivalColors.accentText} />
+                      <Text style={rm.ghostText}>Try again {goal.period_type === 'week' ? 'this week' : 'this month'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : encouragement ? (
+                  <Text style={ms.message}>{encouragement}</Text>
+                ) : null}
+
+                {goal.pinned ? (
+                  <View style={ms.pinnedRow}>
+                    <RivalIcon name="pin" size={12} color={RivalColors.accentText} />
+                    <Text style={ms.pinnedText}>Pinned to Home</Text>
+                  </View>
+                ) : null}
+              </TouchableOpacity>
+            );
+          })}
+
+          {!loading && goals.length < 3 && (
+            <TouchableOpacity style={rm.primary} onPress={() => { setEditingGoal(null); setShowAdd(true); }} activeOpacity={0.85}>
+              <RivalIcon name="add" size={18} color={rm.primaryText.color as string} />
+              <Text style={rm.primaryText}>Add goal</Text>
+            </TouchableOpacity>
+          )}
+
+          {goals.length >= 3 && (
+            <Text style={[rm.hint, { textAlign: 'center' }]}>Maximum 3 goals. Delete one to add another.</Text>
+          )}
+        </ScrollView>
+        {sheet}
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <RivalTopNav active="today" />
@@ -438,7 +696,7 @@ export default function GoalsScreen() {
           <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))} color={RivalColors.accentFill} />
         </View>
 
-        <RivalPageHeader title="Goals" subtitle="Track what you're working towards." />
+        <RivalPageHeader title="Goals" subtitle="Goals and progress." />
 
         {loading && <Text style={styles.emptyText}>Loading…</Text>}
 
@@ -493,7 +751,7 @@ export default function GoalsScreen() {
               {done && (
                 <View style={styles.celebrationBanner}>
                   <Text style={styles.celebrationText}>Goal complete!</Text>
-                  <Text style={styles.celebrationSub}>You crushed it. Set a new one to keep the momentum going.</Text>
+                  <Text style={styles.celebrationSub}>You crushed it! Set new goal to keep the momentum going.</Text>
                 </View>
               )}
 
@@ -538,102 +796,7 @@ export default function GoalsScreen() {
 
       </ScrollView>
 
-      <Modal visible={showAdd} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalCard}>
-            <Text style={styles.modalTitle}>{editingGoal ? 'Edit Goal' : 'New Goal'}</Text>
-
-            <Text style={styles.modalLabel}>Type</Text>
-            <View style={styles.segmentRow}>
-              {(['distance', 'elevation', 'gym_sessions'] as const).map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  style={[styles.segment, goalType === t && styles.segmentActive]}
-                  onPress={() => { setGoalType(t); setActivityFilter(null); }}
-                >
-                  <Text style={[styles.segmentText, goalType === t && styles.segmentTextActive]}>
-                    {GOAL_LABELS[t]}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {goalType !== 'gym_sessions' && (
-              <>
-                <Text style={styles.modalLabel}>Activity</Text>
-                <View style={styles.segmentRow}>
-                  {filterOptions.map((opt) => (
-                    <TouchableOpacity
-                      key={String(opt.value)}
-                      style={[styles.segment, activityFilter === opt.value && styles.segmentActive]}
-                      onPress={() => setActivityFilter(opt.value)}
-                    >
-                      <Text style={[styles.segmentText, activityFilter === opt.value && styles.segmentTextActive]}>
-                        {opt.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </>
-            )}
-
-            <Text style={styles.modalLabel}>Target ({GOAL_UNITS[goalType]})</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder={goalType === 'distance' ? '100' : goalType === 'elevation' ? '5000' : '12'}
-              placeholderTextColor={RivalColors.textSecondary}
-              value={targetValue}
-              onChangeText={setTargetValue}
-              keyboardType="decimal-pad"
-            />
-
-            <Text style={styles.modalLabel}>Period</Text>
-            <View style={styles.segmentRow}>
-              {(['week', 'month', 'custom'] as const).map((p) => (
-                <TouchableOpacity
-                  key={p}
-                  style={[styles.segment, periodType === p && styles.segmentActive]}
-                  onPress={() => setPeriodType(p)}
-                >
-                  <Text style={[styles.segmentText, periodType === p && styles.segmentTextActive]}>
-                    {p.charAt(0).toUpperCase() + p.slice(1)}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {periodType === 'custom' && (
-              <>
-                <Text style={styles.modalLabel}>End date</Text>
-                <RivalDateField value={customEndDate} onChangeText={setCustomEndDate} placeholder="31/12/2026" inputStyle={styles.modalInput} />
-              </>
-            )}
-
-            {editingGoal && (
-              <TouchableOpacity style={styles.deleteGoalButton} onPress={() => deleteGoal(editingGoal.id)}>
-                <RivalIcon name="delete" size={16} color={RivalColors.error} />
-                <Text style={styles.deleteGoalButtonText}>Delete Goal</Text>
-              </TouchableOpacity>
-            )}
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.cancelButton}
-                onPress={closeForm}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.saveButton, (!targetValue || saving) && styles.saveButtonDisabled]}
-                onPress={saveGoal}
-                disabled={!targetValue || saving}
-              >
-                <Text style={styles.saveButtonText}>{saving ? 'Saving…' : editingGoal ? 'Save Changes' : 'Save Goal'}</Text>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
-        </View>
-      </Modal>
+      {sheet}
     </SafeAreaView>
   );
 }
@@ -719,10 +882,10 @@ const styles = StyleSheet.create({
   },
   endedBlock: { marginTop: 10, gap: 10 },
   tryAgainBtn: {
-    backgroundColor: RivalColors.accentFill, borderRadius: RivalRadius.full,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: RivalRadius.full,
     paddingVertical: 10, alignItems: 'center',
   },
-  tryAgainBtnText: { fontSize: 14, fontWeight: '700', color: RivalColors.onAccentFill },
+  tryAgainBtnText: { fontSize: 14, fontWeight: '700', color: RivalButtonColors.label(RivalColors.onAccentFill) },
   goalProgress: { flexDirection: 'row', alignItems: 'baseline', marginBottom: 20 },
   // Display number — the editorial serif, matching Today's Focus card.
   progressCurrent: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 30, fontWeight: '700', color: RivalColors.textPrimary },
@@ -785,13 +948,13 @@ const styles = StyleSheet.create({
   barLabelProgress: { fontSize: 11, fontWeight: '700' },
   barLabelEnd: { fontSize: 11, color: RivalColors.textSecondary },
   addButton: {
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',
     marginTop: 8,
   },
-  addButtonText: { color: RivalColors.textPrimary, fontSize: 18, fontWeight: '700' },
+  addButtonText: { color: RivalButtonColors.label(RivalColors.textPrimary), fontSize: 18, fontWeight: '700' },
   maxText: { color: RivalColors.textSecondary, fontSize: 13, textAlign: 'center', marginTop: 16 },
   modalOverlay: {
     flex: 1,
@@ -819,9 +982,9 @@ const styles = StyleSheet.create({
     borderColor: RivalColors.surfaceHigh,
     backgroundColor: RivalColors.surfaceContainer,
   },
-  segmentActive: { backgroundColor: RivalColors.accentFill, borderColor: RivalColors.accentFill },
+  segmentActive: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderColor: RivalButtonColors.fill },
   segmentText: { color: RivalColors.textSecondary, fontSize: 13, fontWeight: '600' },
-  segmentTextActive: { color: RivalColors.textPrimary },
+  segmentTextActive: { color: RivalButtonColors.label(RivalColors.textPrimary) },
   modalInput: {
     backgroundColor: RivalColors.surfaceContainer,
     borderRadius: 10,
@@ -843,11 +1006,41 @@ const styles = StyleSheet.create({
   cancelButtonText: { color: RivalColors.textSecondary, fontSize: 16, fontWeight: '600' },
   saveButton: {
     flex: 2,
-    backgroundColor: RivalColors.accentFill,
+    backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient,
     paddingVertical: 14,
     borderRadius: 10,
     alignItems: 'center',
   },
   saveButtonDisabled: { opacity: 0.4 },
-  saveButtonText: { color: RivalColors.textPrimary, fontSize: 16, fontWeight: '700' },
+  saveButtonText: { color: RivalButtonColors.label(RivalColors.textPrimary), fontSize: 16, fontWeight: '700' },
+});
+
+// Mobile only — the RIVAL look (see RivalMobile.tsx).
+const ms = StyleSheet.create({
+  // Clears the floating bottom nav, as the desktop content style does.
+  content: { paddingBottom: 120 },
+  empty: { alignItems: 'center', paddingVertical: 28 },
+  cardDone: { borderColor: 'rgba(245,183,89,0.45)' },
+  goalTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  pinBtn: {
+    width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+  },
+  pinBtnOn: { borderColor: 'rgba(255,209,190,0.35)', backgroundColor: 'rgba(255,209,190,0.10)' },
+  numbers: { flexDirection: 'row', alignItems: 'baseline', marginTop: 2 },
+  progressNum: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 34, fontWeight: '700', lineHeight: 40 },
+  progressOf: { fontSize: 14, fontWeight: '600', color: RivalWarm.muted },
+  pct: { fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
+  message: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 15, lineHeight: 21, color: RivalWarm.soft },
+  doneBlock: { gap: 8 },
+  pinnedRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  pinnedText: { fontSize: 11.5, fontWeight: '700', color: RivalColors.accentText },
+
+  // Size to the form so the sheet sits on the bottom edge, not mid-screen.
+  sheetScroll: { flexGrow: 0 },
+  sheet: { backgroundColor: RivalWarm.card, borderTopWidth: 1, borderColor: RivalWarm.cardBorder, padding: 22, paddingBottom: 36, gap: 12 },
+  chip: { borderRadius: 999, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: RivalWarm.field, paddingHorizontal: 16 },
+  sheetActions: { gap: 10, marginTop: 10 },
+  deleteLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 },
+  deleteLinkText: { fontSize: 14, fontWeight: '700', color: RivalColors.error },
 });

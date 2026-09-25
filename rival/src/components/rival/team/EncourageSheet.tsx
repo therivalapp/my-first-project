@@ -59,7 +59,7 @@ export function EncourageSheet({
       });
       if (res.status === 429) {
         onSent(toUser.id);
-        setError(`You've already encouraged ${toUser.name} today.`);
+        setError(`${toUser.name} has already been encouraged today.`);
         return;
       }
       const data = await res.json().catch(() => ({}));
@@ -84,14 +84,14 @@ export function EncourageSheet({
           <View style={sheet.head}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={sheet.title}>Encourage {toUser?.name ?? ''}</Text>
-              <Text style={sheet.sub}>They'll get it as a notification. One a day per teammate.</Text>
+              <Text style={sheet.sub}>Sent as a notification. One per teammate per day.</Text>
             </View>
             <TouchableOpacity style={sheet.close} onPress={onClose} accessibilityLabel="Close">
               <RivalIcon name="close" size={18} color={RivalColors.textSecondary} />
             </TouchableOpacity>
           </View>
 
-          <Text style={sheet.label}>Quick message</Text>
+          <Text style={sheet.label}>Suggested messages</Text>
           <View style={sheet.chipRow}>
             {PRESETS.map(p => (
               <TouchableOpacity key={p} style={[sheet.chip, message === p && sheet.chipOn]} onPress={() => setMessage(p)}>
@@ -100,7 +100,7 @@ export function EncourageSheet({
             ))}
           </View>
 
-          <Text style={sheet.label}>Or write your own</Text>
+          <Text style={sheet.label}>Custom message</Text>
           <TextInput
             style={sheet.input}
             value={message}

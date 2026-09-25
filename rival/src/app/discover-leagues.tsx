@@ -5,11 +5,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
-import { RivalTopNav, RivalIcon, RivalFixedBackground } from '../components/rival';
+import { RivalTopNav, RivalIcon, RivalFixedBackground, RivalWarm } from '../components/rival';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 import type { RivalIconName } from '../components/rival/RivalIcon';
-import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
-import { BREAKPOINT_TWO_UP_GRID } from '../constants/breakpoints';
+import { RivalColors, RivalRadius, RivalType, RivalButtonColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { BREAKPOINT_TWO_UP_GRID, BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
 type MembershipState = 'none' | 'pending' | 'active';
 
@@ -57,6 +57,9 @@ function getMondayStart(date: Date) {
 export default function DiscoverLeaguesScreen() {
   const { width: windowWidth } = useWindowDimensions();
   const wide = windowWidth >= BREAKPOINT_TWO_UP_GRID;
+  // Phone: the RIVAL look on headings and the Discover rows. The team cards
+  // keep their own design.
+  const mob = windowWidth < BREAKPOINT_WIDE_LAYOUT;
 
   const [myTeams, setMyTeams] = useState<TeamRow[]>([]);
   const [publicTeams, setPublicTeams] = useState<TeamRow[]>([]);
@@ -219,7 +222,7 @@ export default function DiscoverLeaguesScreen() {
         const mostRecent = weekActivities[0];
         if (mostRecent) {
           const name = formatDisplayName(profileById.get(mostRecent.user_id), 'Someone');
-          const typeLabel = (mostRecent.activity_type || 'a session').replace(/([a-z])([A-Z])/g, '$1 $2');
+          const typeLabel = (mostRecent.activity_type || 'an activity').replace(/([a-z])([A-Z])/g, '$1 $2');
           heroStatByLeague[teamId] = { icon: 'run', text: `${name} logged ${typeLabel}` };
         } else {
           heroStatByLeague[teamId] = null;
@@ -372,11 +375,11 @@ export default function DiscoverLeaguesScreen() {
         {/* ——— My Teams ——— */}
         {!loading && (
           <>
-            <Text style={[styles.sectionTitle, styles.sectionTitleCentered]}>My Teams</Text>
+            <Text style={[styles.sectionTitle, styles.sectionTitleCentered, mob && ms.sectionTitle]}>{mob ? 'My teams' : 'My Teams'}</Text>
             {filteredMine.length === 0 ? (
               <View style={styles.emptyBox}>
                 <RivalIcon name="groups" size={30} color={RivalColors.textSecondary} />
-                <Text style={styles.emptyText}>{q ? 'No teams match your search.' : "You're not on a team yet."}</Text>
+                <Text style={styles.emptyText}>{q ? 'No teams match this search.' : 'No team yet.'}</Text>
                 {!q && <Text style={styles.emptySub}>Create one, or join a public team below.</Text>}
               </View>
             ) : (
@@ -400,17 +403,17 @@ export default function DiscoverLeaguesScreen() {
                   <View style={styles.joinCardIcon}>
                     <RivalIcon name="add" size={26} color={RivalColors.textPrimary} />
                   </View>
-                  <Text style={styles.joinCardTitle}>Join a New Team</Text>
-                  <Text style={styles.joinCardSub}>Enter a code or browse public squads</Text>
+                  <Text style={styles.joinCardTitle}>Join a Team</Text>
+                  <Text style={styles.joinCardSub}>Enter an invite code or browse public teams</Text>
                 </TouchableOpacity>
               </View>
             )}
 
             {/* ——— Discover ——— */}
-            <Text style={[styles.sectionTitle, styles.sectionTitleCentered]}>Discover</Text>
+            <Text style={[styles.sectionTitle, styles.sectionTitleCentered, mob && ms.sectionTitle]}>Discover</Text>
             <Text style={styles.sectionSub}>Public teams open to join requests.</Text>
 
-            {joinError && <Text style={styles.joinError}>⚠️ {joinError}</Text>}
+            {joinError && <Text style={styles.joinError}>{mob ? joinError : `⚠️ ${joinError}`}</Text>}
 
             {filteredPublic.length === 0 ? (
               <View style={styles.emptyBox}>
@@ -421,7 +424,7 @@ export default function DiscoverLeaguesScreen() {
             ) : (
               <View style={[styles.discoverList, wide && styles.discoverListWide]}>
                 {filteredPublic.map(team => (
-                  <View key={team.id} style={[styles.discoverCard, wide && styles.discoverCardHalf]}>
+                  <View key={team.id} style={[styles.discoverCard, wide && styles.discoverCardHalf, mob && ms.discoverCard]}>
                     <TouchableOpacity
                       style={styles.discoverLeft}
                       onPress={() => router.push({ pathname: '/team-preview', params: { id: team.id } })}
@@ -434,13 +437,13 @@ export default function DiscoverLeaguesScreen() {
                         </View>
                       )}
                       <View style={styles.discoverInfo}>
-                        <Text style={styles.discoverName} numberOfLines={1}>{team.name}</Text>
+                        <Text style={[styles.discoverName, mob && ms.discoverName]} numberOfLines={1}>{team.name}</Text>
                         {/* Headcount alone can't tell a living team from an
                             abandoned one — the week's activity can. */}
                         <Text style={styles.discoverMeta}>
                           {memberLabel(team.member_count)}
                           {team.sessions_last_7d > 0
-                            ? ` · ${team.sessions_last_7d} session${team.sessions_last_7d === 1 ? '' : 's'} this week`
+                            ? ` · ${team.sessions_last_7d} ${team.sessions_last_7d === 1 ? 'activity' : 'activities'} this week`
                             : ' · Quiet this week'}
                         </Text>
                       </View>
@@ -451,11 +454,11 @@ export default function DiscoverLeaguesScreen() {
                       </View>
                     ) : (
                       <TouchableOpacity
-                        style={[styles.joinBtn, joining === team.id && styles.joinBtnDisabled]}
+                        style={[styles.joinBtn, mob && ms.joinBtn, joining === team.id && styles.joinBtnDisabled]}
                         onPress={() => join(team.id)}
                         disabled={joining === team.id}
                       >
-                        <Text style={styles.joinBtnText}>{joining === team.id ? 'Sending…' : 'Request to join'}</Text>
+                        <Text style={[styles.joinBtnText, mob && ms.joinBtnText]}>{joining === team.id ? 'Sending…' : mob ? 'Request' : 'Request to join'}</Text>
                       </TouchableOpacity>
                     )}
                   </View>
@@ -594,8 +597,8 @@ const styles = StyleSheet.create({
   searchBox: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', borderRadius: RivalRadius.full, paddingHorizontal: 16, height: 44 },
   searchInput: { flex: 1, color: RivalColors.textPrimary, fontSize: 14, height: '100%' },
   actionBtns: { flexDirection: 'row', gap: 8 },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: RivalColors.accentFill, borderRadius: RivalRadius.full, paddingHorizontal: 16, height: 44 },
-  actionBtnText: { color: RivalColors.onAccentFill, fontSize: 14, fontWeight: '700' },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: RivalRadius.full, paddingHorizontal: 16, height: 44 },
+  actionBtnText: { color: RivalButtonColors.label(RivalColors.onAccentFill), fontSize: 14, fontWeight: '700' },
   actionBtnGhost: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderColor: `${RivalColors.accentFill}66`, borderRadius: RivalRadius.full, paddingHorizontal: 16, height: 44 },
   actionBtnGhostText: { color: RivalColors.accentText, fontSize: 14, fontWeight: '700' },
 
@@ -666,9 +669,19 @@ const styles = StyleSheet.create({
   discoverLogoFallback: { width: 44, height: 44, borderRadius: RivalRadius.DEFAULT, backgroundColor: `${RivalColors.accentFill}22`, alignItems: 'center', justifyContent: 'center' },
   discoverName: { fontSize: 15, fontWeight: '700', color: RivalColors.textPrimary },
   discoverMeta: { fontSize: 12, color: RivalColors.textSecondary, marginTop: 2 },
-  joinBtn: { backgroundColor: RivalColors.accentFill, borderRadius: RivalRadius.full, paddingVertical: 8, paddingHorizontal: 14 },
+  joinBtn: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: RivalRadius.full, paddingVertical: 8, paddingHorizontal: 14 },
   joinBtnDisabled: { opacity: 0.5 },
-  joinBtnText: { color: RivalColors.onAccentFill, fontWeight: '800', fontSize: 13 },
+  joinBtnText: { color: RivalButtonColors.label(RivalColors.onAccentFill), fontWeight: '800', fontSize: 13 },
   pendingPill: { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: RivalRadius.full, paddingVertical: 8, paddingHorizontal: 14 },
   pendingPillText: { color: RivalColors.textSecondary, fontWeight: '700', fontSize: 13 },
+});
+
+// Phone only — the RIVAL look (see RivalMobile.tsx).
+const ms = StyleSheet.create({
+  sectionTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 26, fontWeight: '700', textTransform: 'none', letterSpacing: 0 },
+  discoverCard: { backgroundColor: 'rgba(29,23,20,0.88)', borderColor: RivalWarm.cardBorder, borderRadius: 16 },
+  discoverName: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 17 },
+  // Only one gradient pill per screen (Create Team); a row action is quiet.
+  joinBtn: { backgroundColor: 'transparent', ...RivalButtonColors.noGradient, borderWidth: 1, borderColor: 'rgba(255,209,190,0.28)' },
+  joinBtnText: { color: RivalColors.accentText },
 });

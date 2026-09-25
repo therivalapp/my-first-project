@@ -8,7 +8,7 @@ import { notify } from '../lib/notify';
 import { connectStrava, runFullStravaImport } from '../lib/strava';
 import { getQuote, QuoteTone } from '../lib/quotes';
 import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav, StravaImportReveal, RivalBackButton} from '../components/rival';
-import { RivalColors, RivalRadius, RivalType } from '../constants/rivalTheme';
+import { RivalColors, RivalRadius, RivalType, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
 const QUOTE_TONES: Array<{ value: QuoteTone; label: string; sub: string }> = [
@@ -142,7 +142,7 @@ export default function ProfileScreen() {
     if (error) {
       // Don't advance the UI past a write that didn't land — showing the new
       // name while the row still holds the old one is worse than an error.
-      notify("Couldn't save your name", error.message);
+      notify("Couldn't save name", error.message);
       setSaving(false);
       return;
     }
@@ -158,7 +158,7 @@ export default function ProfileScreen() {
     const { data: { user } } = await getAuthUser();
     if (!user) { setSavingBio(false); return; }
     const { error } = await supabase.from('users').update({ bio: trimmed || null }).eq('id', user.id);
-    if (error) { notify("Couldn't save bio", error.message); setSavingBio(false); return; }
+    if (error) { notify("Mindset not saved", error.message); setSavingBio(false); return; }
     setBio(trimmed);
     setNewBio(trimmed);
     setSavingBio(false);
@@ -203,7 +203,7 @@ export default function ProfileScreen() {
           // the old avatar, so say so rather than showing the new one.
           const { error: rowErr } = await supabase.from('users').update({ avatar_url: urlData.publicUrl }).eq('id', user.id);
           if (rowErr) {
-            notify("Couldn't update your photo", rowErr.message);
+            notify("Couldn't update photo", rowErr.message);
           } else {
             setAvatarUrl(urlData.publicUrl);
           }
@@ -301,7 +301,7 @@ export default function ProfileScreen() {
         // which read as sync doing something it wasn't.
         notify('Up to date', "You're already synced with Strava — nothing new to pull in.");
       } else {
-        notify('Synced', `Pulled in ${data.inserted} new activit${data.inserted === 1 ? 'y' : 'ies'}.`);
+        notify('Synced', `${data.inserted} new activit${data.inserted === 1 ? 'y' : 'ies'} imported.`);
       }
     } catch {
       notify('Sync failed', 'Could not reach the server. Check your connection and try again.');
@@ -370,7 +370,7 @@ export default function ProfileScreen() {
       });
       const data = await res.json();
       if (!res.ok || !data.deleted) {
-        notify("Couldn't delete account", data.error || 'Please try again or contact support.');
+        notify("Couldn't delete account", data.error || 'Try again or contact support.');
         return;
       }
       await supabase.auth.signOut();
@@ -444,27 +444,27 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {/* Bio */}
+          {/* Mindset — stored in users.bio; only the display name changed. */}
           <View style={styles.field}>
-            <Text style={styles.fieldLabel}>BIO</Text>
+            <Text style={styles.fieldLabel}>MINDSET</Text>
             <TextInput
               style={styles.bioInput}
               value={newBio}
               onChangeText={(t) => setNewBio(t.slice(0, 280))}
-              placeholder="Who are you, and why do you train?"
+              placeholder="Share your Mindset"
               placeholderTextColor={RivalColors.textSecondary}
               multiline
               numberOfLines={3}
             />
             <View style={styles.bioFooter}>
-              <Text style={styles.bioHint}>Focus on your philosophy, not just your personal bests.</Text>
+              <Text style={styles.bioHint}>What keeps you going. A line to live by, a favourite quote, the thought that gets you through the hard part.</Text>
               <Text style={styles.bioCount}>{newBio.length}/280</Text>
             </View>
             {bioDirty && (
               <View style={styles.bioSaveRow}>
                 <TouchableOpacity onPress={() => setNewBio(bio)}><Text style={styles.cancelText}>Discard</Text></TouchableOpacity>
                 <TouchableOpacity style={styles.saveChip} onPress={saveBio} disabled={savingBio}>
-                  <Text style={styles.saveChipText}>{savingBio ? '…' : 'Save bio'}</Text>
+                  <Text style={styles.saveChipText}>{savingBio ? '…' : 'Save mindset'}</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -498,7 +498,7 @@ export default function ProfileScreen() {
       {/* Link to stats */}
       <TouchableOpacity style={styles.statsLink} onPress={() => router.push('/stats')}>
         <RivalIcon name="stats" size={16} color={RivalColors.textPrimary} />
-        <Text style={styles.statsLinkText}>See your stats — rank, milestones, Impact & more</Text>
+        <Text style={styles.statsLinkText}>Stats: rank, milestones and Impact</Text>
         <Text style={styles.statsLinkArrow}>→</Text>
       </TouchableOpacity>
 
@@ -516,7 +516,7 @@ export default function ProfileScreen() {
   const appsPanel = (
     <RivalCard glass style={styles.panel}>
       {wide && <Text style={styles.panelTitle}>Connected Apps</Text>}
-      <Text style={styles.panelSub}>Sync your training automatically from the services you already use.</Text>
+      <Text style={styles.panelSub}>Sync training automatically from connected services.</Text>
 
       <View style={styles.appRow}>
         <View style={styles.appRowLeft}>
@@ -600,7 +600,7 @@ export default function ProfileScreen() {
   const notificationsPanel = (
     <RivalCard glass style={styles.panel}>
       {wide && <Text style={styles.panelTitle}>Notifications</Text>}
-      <Text style={styles.panelSub}>Choose what RIVAL pings you about.</Text>
+      <Text style={styles.panelSub}>Choose which notifications RIVAL sends.</Text>
       <View style={styles.comingSoonBox}>
         <RivalIcon name="notifications" size={40} color={RivalColors.textSecondary} />
         <Text style={styles.comingSoonTitle}>Coming soon</Text>
@@ -778,8 +778,8 @@ const styles = StyleSheet.create({
   editHint: { fontSize: 14 },
   editRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   input: { flex: 1, backgroundColor: RivalColors.surfaceContainer, borderRadius: RivalRadius.DEFAULT, paddingHorizontal: 14, paddingVertical: 12, color: RivalColors.textPrimary, fontSize: 15, fontWeight: '600', borderWidth: 1, borderColor: RivalColors.accentFill },
-  saveChip: { backgroundColor: RivalColors.accentFill, paddingHorizontal: 14, paddingVertical: 10, borderRadius: RivalRadius.DEFAULT },
-  saveChipText: { color: RivalColors.onAccentFill, fontWeight: '700', fontSize: 14 },
+  saveChip: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, paddingHorizontal: 14, paddingVertical: 10, borderRadius: RivalRadius.DEFAULT },
+  saveChipText: { color: RivalButtonColors.label(RivalColors.onAccentFill), fontWeight: '700', fontSize: 14 },
   cancelText: { color: RivalColors.textSecondary, fontSize: 14 },
   errorText: { fontSize: 12, color: RivalColors.error },
 

@@ -5,8 +5,8 @@ import { router, useFocusEffect } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { CANONICAL_LIFTS, matchCanonicalLift } from './scan-workout';
-import { RivalIcon, RivalTopNav, RivalFixedBackground, RivalBackButton} from '../components/rival';
-import { RivalColors, RivalRadius, RivalType, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalIcon, RivalTopNav, RivalFixedBackground, RivalBackButton, RivalWarm, rm } from '../components/rival';
+import { RivalColors, RivalRadius, RivalType, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
 type Entry = { id: string; exercise_name: string; weight_kg: number; reps: number | null; performed_at: string };
@@ -191,7 +191,7 @@ export default function LiftsScreen() {
         <ScrollView contentContainerStyle={styles.content}>
           <View style={styles.headerRow}>
             <RivalBackButton onPress={() => (router.canGoBack() ? router.back() : router.replace('/my-activities'))} color={RivalColors.accentFill} />
-            <Text style={styles.headerTitle}>Personal Bests</Text>
+            <Text style={styles.headerTitle}>{wide ? 'Personal Bests' : 'Personal bests'}</Text>
             <View style={{ width: 48 }} />
           </View>
 
@@ -199,7 +199,7 @@ export default function LiftsScreen() {
           {loading && <Text style={styles.emptyText}>Loading…</Text>}
 
           {!loading && !active && (
-            <Text style={styles.emptyText}>No lifts yet — log your first below.</Text>
+            <Text style={styles.emptyText}>No lifts logged.</Text>
           )}
 
           {!loading && active && (
@@ -209,7 +209,7 @@ export default function LiftsScreen() {
               {hasEntries ? (
                 <>
                   <View style={styles.pbRow}>
-                    <Text style={styles.pbValue}>{active.pb}</Text>
+                    <Text style={[styles.pbValue, !wide && ms.pbValue]}>{active.pb}</Text>
                     <Text style={styles.pbUnit}>KG</Text>
                   </View>
 
@@ -245,7 +245,7 @@ export default function LiftsScreen() {
                       </View>
                     </View>
                   ) : (
-                    <Text style={styles.noGoalHint}>Set a goal to track your progress toward a new PB.</Text>
+                    <Text style={styles.noGoalHint}>Set a goal to track progress toward a new PB.</Text>
                   )}
                 </>
               ) : (
@@ -256,14 +256,29 @@ export default function LiftsScreen() {
               )}
 
               <View style={styles.heroActions}>
-                <TouchableOpacity style={[styles.heroBtn, styles.heroBtnPrimary]} onPress={() => openLogModal(active.name)}>
-                  <RivalIcon name="add" size={18} color={RivalColors.onAccentFill} />
-                  <Text style={styles.heroBtnPrimaryText}>LOG LIFT</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.heroBtn, styles.heroBtnSecondary]} onPress={() => openGoalModal(active.name, active.goal, active.pb)}>
-                  <RivalIcon name="target" size={18} color={RivalColors.textPrimary} />
-                  <Text style={styles.heroBtnSecondaryText}>{active.goal ? 'EDIT GOAL' : 'SET GOAL'}</Text>
-                </TouchableOpacity>
+                {wide ? (
+                  <>
+                    <TouchableOpacity style={[styles.heroBtn, styles.heroBtnPrimary]} onPress={() => openLogModal(active.name)}>
+                      <RivalIcon name="add" size={18} color={RivalColors.onAccentFill} />
+                      <Text style={styles.heroBtnPrimaryText}>LOG LIFT</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.heroBtn, styles.heroBtnSecondary]} onPress={() => openGoalModal(active.name, active.goal, active.pb)}>
+                      <RivalIcon name="target" size={18} color={RivalColors.textPrimary} />
+                      <Text style={styles.heroBtnSecondaryText}>{active.goal ? 'EDIT GOAL' : 'SET GOAL'}</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <TouchableOpacity style={[rm.primary, { flex: 1 }]} onPress={() => openLogModal(active.name)} activeOpacity={0.85}>
+                      <RivalIcon name="add" size={18} color={rm.primaryText.color as string} />
+                      <Text style={rm.primaryText}>Log lift</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[rm.ghost, ms.ghostOnPhoto, { flex: 1 }]} onPress={() => openGoalModal(active.name, active.goal, active.pb)} activeOpacity={0.85}>
+                      <RivalIcon name="target" size={17} color={RivalColors.accentText} />
+                      <Text style={rm.ghostText}>{active.goal ? 'Edit goal' : 'Set goal'}</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
               </View>
 
               {hasEntries && (
@@ -304,7 +319,7 @@ export default function LiftsScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll} contentContainerStyle={styles.chipRow}>
               <TouchableOpacity style={styles.logDifferentChip} onPress={() => openLogModal('Other')}>
                 <RivalIcon name="add" size={18} color={RivalColors.accentText} />
-                <Text style={styles.logDifferentText}>Log different</Text>
+                <Text style={styles.logDifferentText}>Log another lift</Text>
               </TouchableOpacity>
               {chips.map((c) => {
                 const isActive = c.name === focused;
@@ -312,12 +327,12 @@ export default function LiftsScreen() {
                 return (
                   <TouchableOpacity
                     key={c.name}
-                    style={[styles.chip, isActive && styles.chipActive, !hasPb && styles.chipEmpty]}
+                    style={[styles.chip, isActive && styles.chipActive, !wide && isActive && ms.chipActive, !hasPb && styles.chipEmpty]}
                     onPress={() => setFocused(c.name)}
                   >
-                    <Text style={[styles.chipName, isActive && { color: RivalColors.onAccentFill }]}>{c.name.toUpperCase()}</Text>
+                    <Text style={[styles.chipName, isActive && { color: wide ? RivalColors.onAccentFill : ms.onGradient.color }]}>{c.name.toUpperCase()}</Text>
                     {hasPb ? (
-                      <Text style={[styles.chipValue, isActive && { color: RivalColors.onAccentFill }]}>{c.pb} <Text style={styles.chipUnit}>KG</Text></Text>
+                      <Text style={[styles.chipValue, !wide && ms.chipValue, isActive && { color: wide ? RivalColors.onAccentFill : ms.onGradient.color }]}>{c.pb} <Text style={styles.chipUnit}>KG</Text></Text>
                     ) : (
                       <Text style={styles.chipNoEntry}>NO ENTRIES</Text>
                     )}
@@ -332,11 +347,11 @@ export default function LiftsScreen() {
       {/* Log modal */}
       <Modal visible={!!logModalFor} transparent animationType="fade" onRequestClose={() => setLogModalFor(null)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Log {logModalFor === 'Other' ? 'a lift' : logModalFor}</Text>
+          <View style={[styles.modalBox, !wide && ms.modalBox]}>
+            <Text style={[styles.modalTitle, !wide && ms.modalTitle]}>Log {logModalFor === 'Other' ? 'a lift' : logModalFor}</Text>
             {logModalFor === 'Other' && (
               <TextInput
-                style={styles.modalInput}
+                style={wide ? styles.modalInput : [rm.field, rm.input, ms.modalInput]}
                 placeholder="Exercise name"
                 placeholderTextColor={RivalColors.textSecondary}
                 value={customName}
@@ -344,7 +359,7 @@ export default function LiftsScreen() {
               />
             )}
             <TextInput
-              style={styles.modalInput}
+              style={wide ? styles.modalInput : [rm.field, rm.input, ms.modalInput]}
               placeholder="Weight (kg)"
               placeholderTextColor={RivalColors.textSecondary}
               keyboardType="decimal-pad"
@@ -352,7 +367,7 @@ export default function LiftsScreen() {
               onChangeText={setLogWeight}
             />
             <TextInput
-              style={styles.modalInput}
+              style={wide ? styles.modalInput : [rm.field, rm.input, ms.modalInput]}
               placeholder="Reps (optional)"
               placeholderTextColor={RivalColors.textSecondary}
               keyboardType="number-pad"
@@ -360,11 +375,11 @@ export default function LiftsScreen() {
               onChangeText={setLogReps}
             />
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setLogModalFor(null)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
+              <TouchableOpacity style={wide ? styles.modalCancelBtn : [rm.ghost, { flex: 1 }]} onPress={() => setLogModalFor(null)}>
+                <Text style={wide ? styles.modalCancelText : rm.ghostText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSaveBtn} onPress={saveLog} disabled={saving}>
-                <Text style={styles.modalSaveText}>{saving ? 'Saving…' : 'Save'}</Text>
+              <TouchableOpacity style={wide ? styles.modalSaveBtn : [rm.primary, { flex: 1 }]} onPress={saveLog} disabled={saving}>
+                <Text style={wide ? styles.modalSaveText : rm.primaryText}>{saving ? 'Saving…' : 'Save'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -374,10 +389,10 @@ export default function LiftsScreen() {
       {/* Goal modal */}
       <Modal visible={!!goalModalFor} transparent animationType="fade" onRequestClose={() => setGoalModalFor(null)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Goal for {goalModalFor}</Text>
+          <View style={[styles.modalBox, !wide && ms.modalBox]}>
+            <Text style={[styles.modalTitle, !wide && ms.modalTitle]}>Goal for {goalModalFor}</Text>
             <TextInput
-              style={styles.modalInput}
+              style={wide ? styles.modalInput : [rm.field, rm.input, ms.modalInput]}
               placeholder="Target weight (kg)"
               placeholderTextColor={RivalColors.textSecondary}
               keyboardType="decimal-pad"
@@ -385,11 +400,11 @@ export default function LiftsScreen() {
               onChangeText={setGoalWeight}
             />
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setGoalModalFor(null)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
+              <TouchableOpacity style={wide ? styles.modalCancelBtn : [rm.ghost, { flex: 1 }]} onPress={() => setGoalModalFor(null)}>
+                <Text style={wide ? styles.modalCancelText : rm.ghostText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSaveBtn} onPress={saveGoal}>
-                <Text style={styles.modalSaveText}>Save</Text>
+              <TouchableOpacity style={wide ? styles.modalSaveBtn : [rm.primary, { flex: 1 }]} onPress={saveGoal}>
+                <Text style={wide ? styles.modalSaveText : rm.primaryText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -488,6 +503,18 @@ const styles = StyleSheet.create({
   modalActions: { flexDirection: 'row', gap: 8, marginTop: 6 },
   modalCancelBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: RivalRadius.DEFAULT, borderWidth: 1, borderColor: RivalColors.outlineVariant },
   modalCancelText: { color: RivalColors.textSecondary, fontWeight: '700' },
-  modalSaveBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: RivalRadius.DEFAULT, backgroundColor: RivalColors.accentFill },
-  modalSaveText: { color: RivalColors.onAccentFill, fontWeight: '700' },
+  modalSaveBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: RivalRadius.DEFAULT, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient },
+  modalSaveText: { color: RivalButtonColors.label(RivalColors.onAccentFill), fontWeight: '700' },
+});
+
+// Phone only — the RIVAL look (see RivalMobile.tsx) on this page's own design.
+const ms = StyleSheet.create({
+  pbValue: { fontFamily: RivalSerifFamily, letterSpacing: -1 },
+  ghostOnPhoto: { backgroundColor: 'rgba(17,14,12,0.55)' },
+  chipActive: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderColor: 'transparent' },
+  onGradient: { color: RivalButtonColors.label(RivalColors.onAccentFill) },
+  chipValue: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700' },
+  modalBox: { backgroundColor: RivalWarm.card, borderColor: RivalWarm.cardBorder, borderRadius: 20, padding: 22, gap: 10 },
+  modalTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 20, fontWeight: '700', marginBottom: 4 },
+  modalInput: { marginBottom: 0 },
 });

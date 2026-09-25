@@ -51,6 +51,13 @@ User-facing copy says **Team, Effort, Respect, Inspired, Impact, Unrivaled**. Th
 
 Voice: always encourage, never pressure or shame. Streaks are pure consistency info — no bonus/penalty language. Gate new copy against the brand-voice bible (in Claude's memory: "RIVAL Brand Voice" / "Daily Perspectives").
 
+**Professional tone — every screen, including every new page.** Titles, labels and buttons are
+plain noun/verb phrases with no "your"/"my" ("Scan workout", "Manual entry", "Take photo").
+Descriptions are short factual sentences ("Details are extracted automatically."). No slang or
+cute phrasing ("snap it", "in one go", "catch up", "fastest"), no exclamation marks, no emoji.
+Errors say what happened and what to do. Encouragement stays but is understated. Run the
+`brand-check` skill on new copy — the full rules live there.
+
 ## Verification limits
 
 Authenticated flows (RLS behavior under a real session, OAuth callbacks) cannot be fully verified without Ricky's credentials — verify what you can (DB introspection, type checks, preview logs/screenshots, deploy success) and say plainly what still needs a human check.

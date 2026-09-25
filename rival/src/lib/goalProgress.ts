@@ -62,5 +62,5 @@ export function goalTitle(goal: GoalRow): string {
   const scope = goal.activity_filter ?? 'All activities';
   if (goal.goal_type === 'distance') return `${scope} · Distance`;
   if (goal.goal_type === 'elevation') return `${scope} · Elevation`;
-  return 'Gym Sessions';
+  return 'Gym activities';
 }

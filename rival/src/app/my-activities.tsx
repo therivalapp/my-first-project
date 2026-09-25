@@ -12,7 +12,9 @@ import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { computeActivityInsight, InsightTone } from '../lib/activityInsights';
 import { loadScoringConfig, DEFAULT_MULTIPLIER, ScoringConfig } from '../lib/effort';
 import { RivalTopNav, RivalIcon, activityIconName, RivalFixedBackground, ActivityDiaryViewer, DiaryActivity, PhotoPositioner, CoverImage } from '../components/rival';
-import { RivalColors, RivalRadius, RivalType, RivalSerifFamily } from '../constants/rivalTheme';
+import { MediaPicker, pickMediaFiles, type MediaItem } from '../components/rival/MediaPicker';
+import { MEDIA_COLUMNS, existingAsItems, saveArrangement, sortMedia, type MediaRow } from '../lib/activityMedia';
+import { RivalColors, RivalRadius, RivalType, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_TWO_UP_GRID, BREAKPOINT_SPACIOUS_GALLERY, BREAKPOINT_MOBILE_NAV } from '../constants/breakpoints';
 
 type ExerciseEntry = {
@@ -41,10 +43,10 @@ type Activity = {
   notes: string | null;
   location: string | null;
   companions: string | null;
+  shared_from_activity_id: string | null;
   pinned: boolean;
 };
 
-type MediaRow = { id: string; activity_id: string; media_url: string; media_type: 'photo' | 'video' };
 
 type WeekGroup = {
   label: string;
@@ -285,6 +287,8 @@ export default function MyActivitiesScreen() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [mediaMap, setMediaMap] = useState<Record<string, MediaRow[]>>({});
+  // The ordering sheet, open between the phone's picker and the upload.
+  const [mediaPicker, setMediaPicker] = useState<{ activityId: string; items: MediaItem[]; notice?: string } | null>(null);
   const [enlargedPhoto, setEnlargedPhoto] = useState<string | null>(null);
   // Effort badge height should track the stat column's height (not the photo's,
   // which can stand taller) — measured directly since flex stretch can't single
@@ -389,7 +393,7 @@ export default function MyActivitiesScreen() {
     // active account) while the older data sat in the table untouched.
     const data = await fetchAllActivities(
       user.id,
-      'id, name, activity_type, started_at, duration_seconds, distance_meters, elevation_meters, effort_score, photo_url, photo_focal_x, photo_focal_y, exercises, race_id, notes, location, companions, pinned',
+      'id, name, activity_type, started_at, duration_seconds, distance_meters, elevation_meters, effort_score, photo_url, photo_focal_x, photo_focal_y, exercises, race_id, notes, location, companions, shared_from_activity_id, pinned',
     );
     if (data) {
       setAllActivities(data);
@@ -424,7 +428,7 @@ export default function MyActivitiesScreen() {
       if (activityIds.length > 0) {
         const { data: mediaData } = await supabase
           .from('activity_media')
-          .select('id, activity_id, media_url, media_type')
+          .select(MEDIA_COLUMNS)
           .in('activity_id', activityIds)
           .order('created_at', { ascending: true });
 
@@ -433,6 +437,8 @@ export default function MyActivitiesScreen() {
           if (!newMediaMap[m.activity_id]) newMediaMap[m.activity_id] = [];
           newMediaMap[m.activity_id].push(m);
         });
+        // Saved order, not upload order — the order set in the picker.
+        Object.keys(newMediaMap).forEach((id) => { newMediaMap[id] = sortMedia(newMediaMap[id]); });
         setMediaMap(newMediaMap);
       }
     }
@@ -441,131 +447,75 @@ export default function MyActivitiesScreen() {
 
   const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => loadActivities());
 
-  const MAX_PHOTOS = 2;
-  const MAX_VIDEOS = 1;
-  const MAX_PHOTO_MB = 15;
-  const MAX_VIDEO_MB = 50;
+  // Size and count limits live in MediaPicker, shared with manual entry, so
+  // an activity has one limit however its photos arrive.
 
   function reportUploadError(activityId: string, msg: string) {
     setUploadErrorActivityId(activityId);
     setUploadError(msg);
   }
 
+  // Adding media is two steps, Instagram-style. First the phone's own picker,
+  // opened straight from the tap — mobile browsers refuse to open one that a
+  // tap did not start. Then the ordering sheet, where every item is numbered
+  // in the order it will post.
   async function uploadPhoto(activityId: string) {
-    if (Platform.OS !== 'web') return;
     setUploadError(null);
     setUploadErrorActivityId(null);
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*,video/*';
-    input.multiple = true;
-    input.onchange = async () => {
-      const files = Array.from(input.files || []);
-      if (files.length === 0) return;
-      setUploading(activityId);
-      try {
-        const existing = mediaMap[activityId] || [];
-        let photoCount = existing.filter(m => m.media_type === 'photo').length;
-        let videoCount = existing.filter(m => m.media_type === 'video').length;
-        let firstNewPhotoUrl: string | null = null;
-        // Captured before any mutation below, so "Cancel" in the crop step
-        // can put the cover photo back exactly how it was rather than just
-        // accepting a default center crop of the new one.
-        const prevActivity = allActivities.find(a => a.id === activityId);
-        const previousUrl = prevActivity?.photo_url ?? null;
-        const previousFocalX = prevActivity?.photo_focal_x ?? null;
-        const previousFocalY = prevActivity?.photo_focal_y ?? null;
+    const { items, rejected } = await pickMediaFiles();
+    if (!items.length) {
+      if (rejected.length) reportUploadError(activityId, rejected[0]);
+      return;
+    }
+    // What is already posted comes first, selected and numbered in its saved
+    // order, with the new picks after it — so the whole set can be
+    // rearranged in one place, not just the part being added.
+    const cover = allActivities.find(a => a.id === activityId)?.photo_url ?? null;
+    const existing = existingAsItems(mediaMap[activityId] || [], cover);
+    setMediaPicker({ activityId, items: [...existing, ...items], notice: rejected[0] });
+  }
 
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          const mediaType: 'photo' | 'video' = file.type.startsWith('video') ? 'video' : 'photo';
-          const sizeMb = file.size / (1024 * 1024);
+  // Reorder (or remove) what is already posted, without picking anything new.
+  function arrangeMedia(activityId: string) {
+    const cover = allActivities.find(a => a.id === activityId)?.photo_url ?? null;
+    setMediaPicker({ activityId, items: existingAsItems(mediaMap[activityId] || [], cover) });
+  }
 
-          if (mediaType === 'video' && sizeMb > MAX_VIDEO_MB) {
-            reportUploadError(activityId, `Video too large (max ${MAX_VIDEO_MB}MB)`);
-            continue;
-          }
-          if (mediaType === 'photo' && sizeMb > MAX_PHOTO_MB) {
-            reportUploadError(activityId, `Photo too large (max ${MAX_PHOTO_MB}MB)`);
-            continue;
-          }
-          if (mediaType === 'photo' && photoCount >= MAX_PHOTOS) {
-            reportUploadError(activityId, `Max ${MAX_PHOTOS} photos per workout`);
-            continue;
-          }
-          if (mediaType === 'video' && videoCount >= MAX_VIDEOS) {
-            reportUploadError(activityId, `Max ${MAX_VIDEOS} video per workout`);
-            continue;
-          }
+  // Saves the whole arranged set — removals, new uploads and the new order —
+  // and makes #1 the cover. See saveArrangement in lib/activityMedia.ts.
+  async function uploadMedia(activityId: string, items: MediaItem[]) {
+    if (!userId) return;
+    setUploading(activityId);
+    try {
+      const previousUrl = allActivities.find(a => a.id === activityId)?.photo_url ?? null;
 
-          const ext = file.name.split('.').pop() || (mediaType === 'video' ? 'mp4' : 'jpg');
-          const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          const path = `${userId}/${activityId}-${uniqueId}.${ext}`;
+      const result = await saveArrangement({
+        activityId,
+        userId,
+        items,
+        existing: mediaMap[activityId] || [],
+        currentCover: previousUrl,
+      });
+      if (result.errors.length) reportUploadError(activityId, result.errors[0]);
 
-          const { error: storageErr } = await supabase.storage
-            .from('activity-photos')
-            .upload(path, file, { contentType: file.type, upsert: true });
+      setMediaMap(prev => ({ ...prev, [activityId]: result.rows }));
 
-          if (storageErr) {
-            reportUploadError(activityId, `Storage: ${storageErr.message}`);
-            continue;
-          }
-
-          const { data: urlData } = supabase.storage.from('activity-photos').getPublicUrl(path);
-
-          const { data: inserted, error: dbErr } = await supabase
-            .from('activity_media')
-            .insert({ activity_id: activityId, media_url: urlData.publicUrl, media_type: mediaType })
-            .select('id, activity_id, media_url, media_type')
-            .single();
-
-          if (dbErr) {
-            reportUploadError(activityId, `DB: ${dbErr.message}`);
-            continue;
-          }
-
-          setMediaMap(prev => ({
-            ...prev,
-            [activityId]: [...(prev[activityId] || []), inserted as MediaRow],
-          }));
-
-          if (mediaType === 'photo') {
-            photoCount++;
-            if (!firstNewPhotoUrl) firstNewPhotoUrl = urlData.publicUrl;
-          } else {
-            videoCount++;
-          }
+      if (result.coverChanged) {
+        const patch = { photo_url: result.cover, photo_focal_x: null, photo_focal_y: null };
+        setAllActivities(prev => prev.map(a => (a.id === activityId ? { ...a, ...patch } : a)));
+        // diaryList is a separate snapshot the open viewer renders from — it
+        // has to be patched too, or the viewer keeps showing the old cover.
+        setDiaryList(prev => prev ? prev.map(a => (a.id === activityId ? { ...a, ...patch } : a)) : prev);
+        // A new cover gets the same crop step a first photo always has.
+        // Cancelling it now means "skip cropping", not "undo": the cover is
+        // whatever is #1, and the old one may have just been deleted.
+        if (result.cover) {
+          setPositioningPhoto({ activityId, url: result.cover, previousUrl: result.cover, previousFocalX: null, previousFocalY: null });
         }
-
-        // A newly uploaded photo always becomes the new cover, even if one
-        // already existed — this UI has nowhere else to show extra photos
-        // (the card grid and diary viewer both only ever render photo_url),
-        // so from the user's side "upload a photo" IS "set/replace the
-        // photo." The old `existingCount === 0` gate meant a SECOND upload
-        // silently landed in activity_media but never replaced what was
-        // shown — the crop/photo appeared not to "swap." Focal point resets
-        // to center since it was measured against the old image.
-        if (firstNewPhotoUrl) {
-          const { error: photoErr } = await supabase.from('activities').update({ photo_url: firstNewPhotoUrl, photo_focal_x: null, photo_focal_y: null }).eq('id', activityId);
-          if (photoErr) notify("Couldn't set that as the cover photo", photoErr.message);
-          setAllActivities(prev => prev.map(a =>
-            a.id === activityId ? { ...a, photo_url: firstNewPhotoUrl!, photo_focal_x: null, photo_focal_y: null } : a
-          ));
-          // diaryList is a separate snapshot the open viewer actually renders
-          // from (not derived live from allActivities) — without patching it
-          // too, an upload made while the viewer is open doesn't show until
-          // you close and reopen it, since the viewer keeps reading the
-          // stale snapshot captured when it was first opened.
-          setDiaryList(prev => prev ? prev.map(a =>
-            a.id === activityId ? { ...a, photo_url: firstNewPhotoUrl!, photo_focal_x: null, photo_focal_y: null } : a
-          ) : prev);
-          setPositioningPhoto({ activityId, url: firstNewPhotoUrl, previousUrl, previousFocalX, previousFocalY });
-        }
-      } finally {
-        setUploading(null);
       }
-    };
-    input.click();
+    } finally {
+      setUploading(null);
+    }
   }
 
   function startEditing(activity: Activity) {
@@ -591,7 +541,7 @@ export default function MyActivitiesScreen() {
   }
 
   // Patches a single activity in local state — used by the diary viewer so
-  // edits (name/location/companions/notes/pinned) reflect on the card grid
+  // edits (name/location/notes/pinned) reflect on the card grid
   // immediately, without waiting on a reload. The viewer does its own
   // (debounced) Supabase writes; this is purely local-state sync.
   function updateActivityLocal(id: string, patch: Partial<Activity>) {
@@ -614,6 +564,7 @@ export default function MyActivitiesScreen() {
       notes: a.notes,
       location: a.location,
       companions: a.companions,
+      shared_from_activity_id: a.shared_from_activity_id,
       pinned: a.pinned,
       race_id: a.race_id,
       isPb: !!pbs[a.id],
@@ -720,7 +671,7 @@ export default function MyActivitiesScreen() {
       candidates.push({ highlight: `${gap} Effort`, rest: ' until your strongest month.' });
     }
     if (candidates.length === 0) {
-      return { highlight: `You've earned ${earned}`, rest: ' this month. Every session counts.' };
+      return { highlight: `You've earned ${earned}`, rest: ' this month. Every activity counts.' };
     }
     const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / (24 * 60 * 60 * 1000));
     return candidates[dayOfYear % candidates.length];
@@ -817,7 +768,7 @@ export default function MyActivitiesScreen() {
     }
 
     if (candidates.length === 0) {
-      return { highlight: `You've earned ${earned}`, rest: ' this week. Every session counts.' };
+      return { highlight: `You've earned ${earned}`, rest: ' this week. Every activity counts.' };
     }
 
     const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / (24 * 60 * 60 * 1000));
@@ -1029,7 +980,7 @@ export default function MyActivitiesScreen() {
             {!loading && groups.length === 0 && (
               <View style={[styles.jWeekPage, pagerHeight ? { height: pagerHeight } : null]}>
                 <Text style={styles.emptyText}>
-                  {allActivities.length === 0 ? 'No activities yet. Log a workout on Strava to get started.' : 'No activities match this filter.'}
+                  {allActivities.length === 0 ? 'No activities yet. Add an activity or connect a device.' : 'No activities match this filter.'}
                 </Text>
               </View>
             )}
@@ -1240,7 +1191,7 @@ export default function MyActivitiesScreen() {
                       <View style={styles.jWeekEmptyWrap}>
                         <View style={styles.jWeekEmptyCard}>
                           <RivalIcon name="pulse" size={20} color={RivalColors.accentFill} />
-                          <Text style={styles.jWeekEmptyTitle}>Your week is wide open.</Text>
+                          <Text style={styles.jWeekEmptyTitle}>No activities this week.</Text>
                           <Text style={styles.jWeekEmptySub}>{emptyWeekLine}</Text>
                         </View>
                         <TouchableOpacity
@@ -1645,8 +1596,8 @@ export default function MyActivitiesScreen() {
             {renderJournalToggle(false)}
             <View style={styles.jYearComingSoon}>
               <RivalIcon name="stats" size={32} color={RivalColors.accentText} />
-              <Text style={styles.jYearComingSoonTitle}>Your Year, coming soon</Text>
-              <Text style={styles.jYearComingSoonBody}>A full look back at everything you've put in this year — total Effort, your biggest months, and every PB along the way.</Text>
+              <Text style={styles.jYearComingSoonTitle}>Year in Review, coming soon</Text>
+              <Text style={styles.jYearComingSoonBody}>A summary of everything you've put in this year: total Effort, your biggest months, and every PB along the way.</Text>
             </View>
           </ScrollView>
           )}
@@ -1670,7 +1621,7 @@ export default function MyActivitiesScreen() {
                       {effortDelta >= 0 ? '↑' : '↓'} {Math.abs(effortDelta)}% vs last week
                     </Text>
                   ) : (
-                    <Text style={styles.heroDeltaMuted}>{thisWk.count > 0 ? 'Momentum building' : 'Log your first this week'}</Text>
+                    <Text style={styles.heroDeltaMuted}>{thisWk.count > 0 ? 'Building momentum' : 'Log your first activity this week'}</Text>
                   )}
                 </View>
               </View>
@@ -1723,7 +1674,7 @@ export default function MyActivitiesScreen() {
                   )}
                 </View>
                 {monthlyPbs.length === 0 ? (
-                  <Text style={styles.monthlyPbEmpty}>No PBs yet this month — get after it.</Text>
+                  <Text style={styles.monthlyPbEmpty}>No PBs this month.</Text>
                 ) : (
                   <ScrollView style={styles.monthlyPbScroll} contentContainerStyle={styles.monthlyPbList} showsVerticalScrollIndicator={false}>
                     {monthlyPbs.map((pb) => (
@@ -1756,7 +1707,7 @@ export default function MyActivitiesScreen() {
           <View style={styles.toolbarRow}>
             {([
               { key: 'refresh', icon: 'check' as const, label: 'Refresh', active: false, onPress: () => loadActivities() },
-              { key: 'logweek', icon: 'calendar' as const, label: 'Log a week', active: false, onPress: () => router.push('/weekly-scan') },
+              { key: 'logweek', icon: 'calendar' as const, label: 'Weekly scan', active: false, onPress: () => router.push('/weekly-scan') },
               { key: 'filter', icon: 'search' as const, label: filterType === 'All' ? 'Filter by type' : `Filtered: ${filterType}`, active: filterType !== 'All', onPress: () => setShowTypeFilter(!showTypeFilter) },
               { key: 'sort', icon: sortOrder === 'latest' ? 'trendDown' as const : 'trendUp' as const, label: sortOrder === 'latest' ? 'Sorted: Latest first' : 'Sorted: Oldest first', active: false, onPress: () => setSortOrder(sortOrder === 'latest' ? 'oldest' : 'latest') },
               { key: 'prs', icon: 'fire' as const, label: 'PBs only', active: prOnly, onPress: () => setPrOnly(!prOnly) },
@@ -1833,7 +1784,7 @@ export default function MyActivitiesScreen() {
 
         {!loading && groups.length === 0 && (
           <Text style={styles.emptyText}>
-            {allActivities.length === 0 ? 'No activities yet. Log a workout on Strava to get started.' : 'No activities match this filter.'}
+            {allActivities.length === 0 ? 'No activities yet. Add an activity or connect a device.' : 'No activities match this filter.'}
           </Text>
         )}
 
@@ -2142,6 +2093,26 @@ export default function MyActivitiesScreen() {
               setDiaryList((prev) => prev ? prev.map((a) => a.id === id ? { ...a, ...patch } : a) : prev);
             }}
             onUploadPhoto={uploadPhoto}
+            onArrangeMedia={arrangeMedia}
+            mediaById={Object.fromEntries(Object.entries(mediaMap).map(([id, rows]) => [
+              id,
+              rows.map((m) => ({ url: m.media_url, type: m.media_type })),
+            ]))}
+          />
+        )}
+
+        {mediaPicker && (
+          <MediaPicker
+            initial={mediaPicker.items}
+            initialNotice={mediaPicker.notice}
+            title="Photos and videos"
+            doneLabel="Save"
+            onCancel={() => setMediaPicker(null)}
+            onDone={(items) => {
+              const { activityId } = mediaPicker;
+              setMediaPicker(null);
+              uploadMedia(activityId, items);
+            }}
           />
         )}
 
@@ -2369,8 +2340,8 @@ const styles = StyleSheet.create({
   // `absolute` here was relative to a container whose height grows with
   // scrollable content, so the button drifted upward as the page scrolled
   // instead of staying put. Same fix as RivalTopNav's bottom tab bar.
-  fab: { position: 'fixed' as any, bottom: 28, right: 24, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 20, borderRadius: RivalRadius.full, backgroundColor: RivalColors.accentFill, shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6, zIndex: 150 },
-  fabText: { fontSize: 15, fontWeight: '700', color: RivalColors.onAccentFill },
+  fab: { position: 'fixed' as any, bottom: 28, right: 24, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 20, borderRadius: RivalRadius.full, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6, zIndex: 150 },
+  fabText: { fontSize: 15, fontWeight: '700', color: RivalButtonColors.label(RivalColors.onAccentFill) },
 
   // ===== Mobile Activity Journal (ported from the Claude mockup) =====
   // Full-screen weekly pager — see the render-site comment for how RNW's

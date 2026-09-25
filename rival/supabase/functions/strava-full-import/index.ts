@@ -21,10 +21,10 @@ const PAGE_SIZE = 75
 const CONCURRENCY = 8
 const MAX_PAGE = 54 // hard stop — 54 * 75 ≈ 4,000 historical activities
 const HOUR_MILESTONES = [
-  { type: 'hours_100', hours: 100, title: '💯 100 Hours Earned', body: "You've crossed 100 hours of training. That's not a hobby anymore." },
-  { type: 'hours_500', hours: 500, title: '⚡ 500 Hours Earned', body: "500 hours. Five hundred. Most people dream it. You did it." },
-  { type: 'hours_1000', hours: 1000, title: '🏆 1,000 Hours Earned', body: "A thousand hours of choosing hard over easy. You are built different." },
-  { type: 'hours_5000', hours: 5000, title: '👑 5,000 Hours Earned', body: "5,000 hours. You have earned something most people will never understand." },
+  { type: 'hours_100', hours: 100, title: '100 Hours Earned', body: '100 hours of training logged.' },
+  { type: 'hours_500', hours: 500, title: '500 Hours Earned', body: '500 hours of training logged.' },
+  { type: 'hours_1000', hours: 1000, title: '1,000 Hours Earned', body: '1,000 hours of training logged.' },
+  { type: 'hours_5000', hours: 5000, title: '5,000 Hours Earned', body: '5,000 hours of training logged. Unrivaled consistency.' },
 ]
 
 // One PAGE per invocation, not the whole history in one loop. The old
@@ -265,8 +265,8 @@ serve(async (req) => {
         const importedHours = Math.round(totalHours)
         const messages = [{
           to: tokenRow.token,
-          title: `📥 Your training history is in`,
-          body: `Your full story — ${importedHours}h and counting — is now part of RIVAL.`,
+          title: `Training history imported`,
+          body: `${importedHours} hours of training history imported from connected device.`,
           data: { screen: 'profile' },
           sound: 'default',
         }]

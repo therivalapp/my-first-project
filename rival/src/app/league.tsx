@@ -11,7 +11,7 @@ import { formatDisplayName, formatTeamName } from '../lib/identity';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { getSeasonStartISO, daysUntilSeasonEnd } from '../lib/season';
 import { matchCanonicalLift } from './scan-workout';
-import { RivalColors, RivalSerifFamily } from '../constants/rivalTheme';
+import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 import { ACTIVITY_ICONS } from '../constants/activityIcons';
 import { formatDuration } from '../lib/format';
@@ -402,7 +402,7 @@ export default function LeagueScreen() {
   async function saveGoal() {
     const { error } = await supabase.from('league_members').update({ personal_goal: goalDraft.trim() || null }).eq('league_id', id).eq('user_id', currentUserId);
     if (error) {
-      notify("Couldn't save your goal", error.message);
+      notify("Couldn't save goal", error.message);
       return;
     }
     setMembers(prev => prev.map(m => m.user_id === currentUserId ? { ...m, personal_goal: goalDraft.trim() || null } : m));
@@ -1138,7 +1138,7 @@ export default function LeagueScreen() {
     setPostingSession(false);
 
     if (error || !inserted) {
-      notify("Couldn't post session", error?.message || 'Please try again.');
+      notify("Couldn't post the activity", error?.message || 'Please try again.');
       return;
     }
     // Auto-RSVP the creator to their own session. Non-fatal: the session
@@ -1166,7 +1166,7 @@ export default function LeagueScreen() {
       // Must clear the spinner too — an early return that skips it leaves the
       // button stuck in its posting state with no way back.
       setPostingQuickTrain(false);
-      notify("Couldn't create that session", insErr.message);
+      notify("Couldn't plan that activity", insErr.message);
       return;
     }
 
@@ -1202,11 +1202,11 @@ export default function LeagueScreen() {
     const joined = (rsvpMap[messageId] || []).includes(currentUserId);
     if (joined) {
       const { error: rsvpOutErr } = await supabase.from('league_session_rsvps').delete().eq('message_id', messageId).eq('user_id', currentUserId);
-      if (rsvpOutErr) { notify("Couldn't update your RSVP", rsvpOutErr.message); loadSessions(); return; }
+      if (rsvpOutErr) { notify("Couldn't update RSVP", rsvpOutErr.message); loadSessions(); return; }
       setRsvpMap(prev => ({ ...prev, [messageId]: (prev[messageId] || []).filter(u => u !== currentUserId) }));
     } else {
       const { error: rsvpInErr } = await supabase.from('league_session_rsvps').insert({ message_id: messageId, user_id: currentUserId });
-      if (rsvpInErr) { notify("Couldn't update your RSVP", rsvpInErr.message); loadSessions(); return; }
+      if (rsvpInErr) { notify("Couldn't update RSVP", rsvpInErr.message); loadSessions(); return; }
       setRsvpMap(prev => ({ ...prev, [messageId]: [...(prev[messageId] || []), currentUserId] }));
     }
   }
@@ -1445,7 +1445,7 @@ export default function LeagueScreen() {
           <Text style={styles.feedTimeAgo}>{timeAgo(msg.created_at)}</Text>
         </View>
         <Text style={styles.sessionCardTitle}>
-          {ACTIVITY_ICONS[msg.activity_type || ''] || '🏅'} {msg.body || `${msg.activity_type} session`}
+          {ACTIVITY_ICONS[msg.activity_type || ''] || '🏅'} {msg.body || `${msg.activity_type} activity`}
         </Text>
         {msg.body && <Text style={styles.sessionCardSubtype}>{msg.activity_type}</Text>}
         <Text style={styles.sessionCardWhen}>{msg.scheduled_at ? formatDateTime(msg.scheduled_at) : ''}</Text>
@@ -1728,8 +1728,8 @@ export default function LeagueScreen() {
 
         {seasonDaysLeft <= 30 && seasonDaysLeft > 0 && (
           <View style={styles.seasonBanner}>
-            <Text style={styles.seasonBannerIcon}>⏳</Text>
-            <Text style={styles.seasonBannerText}>{seasonDaysLeft} days left — team resets Jan 1</Text>
+            <RivalIcon name="timerOutline" size={18} color={RivalColors.accentText} />
+            <Text style={styles.seasonBannerText}>{seasonDaysLeft === 1 ? 'Last day of the year' : `${seasonDaysLeft} days left in the year`} · ranks reset 1 January</Text>
           </View>
         )}
     </>
@@ -2214,9 +2214,9 @@ export default function LeagueScreen() {
               ) : list.length === 0 ? (
                 <View style={styles.feedEmpty}>
                   <Text style={styles.feedEmptyIcon}>📅</Text>
-                  <Text style={styles.feedEmptyText}>{sessionsView === 'upcoming' ? 'No sessions planned' : 'No past sessions'}</Text>
+                  <Text style={styles.feedEmptyText}>{sessionsView === 'upcoming' ? 'No activities planned' : 'No past activities'}</Text>
                   <Text style={styles.feedEmptySubText}>
-                    {sessionsView === 'upcoming' ? 'Plan a run, ride, or workout together.' : 'Sessions move here a day after they happen.'}
+                    {sessionsView === 'upcoming' ? 'Plan a run, ride, or workout together.' : 'Activities move here a day after they happen.'}
                   </Text>
                 </View>
               ) : (
@@ -2807,8 +2807,8 @@ const styles = StyleSheet.create({
   },
   inviteLabel: { fontSize: 13, color: RivalColors.textSecondary, textTransform: 'uppercase', letterSpacing: 2 },
   inviteCode: { fontSize: 36, fontWeight: '900', color: RivalColors.textPrimary, letterSpacing: 8 },
-  copyButton: { backgroundColor: RivalColors.accentFill, paddingVertical: 12, paddingHorizontal: 32, borderRadius: 10, marginTop: 4 },
-  copyButtonText: { color: RivalColors.textPrimary, fontSize: 16, fontWeight: '700' },
+  copyButton: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, paddingVertical: 12, paddingHorizontal: 32, borderRadius: 10, marginTop: 4 },
+  copyButtonText: { color: RivalButtonColors.label(RivalColors.textPrimary), fontSize: 16, fontWeight: '700' },
   leaveTeamButton: { borderWidth: 1, borderColor: RivalColors.error, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 16 },
   leaveTeamText: { color: RivalColors.error, fontSize: 15, fontWeight: '700' },
 
@@ -2828,8 +2828,8 @@ const styles = StyleSheet.create({
   sideInvite: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.06)', marginBottom: 8 },
   sideInviteLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 1.2, color: RivalColors.textSecondary },
   sideInviteCode: { fontSize: 16, fontWeight: '800', letterSpacing: 3, color: RivalColors.textPrimary, marginTop: 2 },
-  sideAddBtn: { backgroundColor: RivalColors.accentFill, borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginBottom: 6 },
-  sideAddBtnText: { color: RivalColors.onAccentFill, fontWeight: '700', fontSize: 14 },
+  sideAddBtn: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginBottom: 6 },
+  sideAddBtnText: { color: RivalButtonColors.label(RivalColors.onAccentFill), fontWeight: '700', fontSize: 14 },
   sideQuiet: { paddingVertical: 8, paddingHorizontal: 14 },
   sideQuietText: { fontSize: 12, fontWeight: '600', color: RivalColors.textSecondary },
   centerScroll: { flex: 1 },
@@ -2871,8 +2871,8 @@ const styles = StyleSheet.create({
   typeChipActive: { backgroundColor: RivalColors.surfaceContainer, borderColor: RivalColors.accentFill },
   typeChipText: { fontSize: 12, fontWeight: '600', color: RivalColors.textSecondary },
   typeChipTextActive: { color: RivalColors.accentFill },
-  postSessionBtn: { backgroundColor: RivalColors.accentFill, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
-  postSessionBtnText: { color: RivalColors.textPrimary, fontWeight: '700', fontSize: 14 },
+  postSessionBtn: { backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient, borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 16 },
+  postSessionBtnText: { color: RivalButtonColors.label(RivalColors.textPrimary), fontWeight: '700', fontSize: 14 },
 
   chatScrollArea: { maxHeight: 420, borderWidth: 1, borderColor: RivalColors.surfaceContainerHigh, borderRadius: 14, backgroundColor: RivalColors.surfaceContainer },
   unreadDivider: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8 },

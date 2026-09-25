@@ -26,7 +26,10 @@ export default function WelcomeScreen() {
           <Text style={styles.logo}>RIVAL</Text>
 
           <View style={styles.taglineWrap}>
-            <Text style={styles.tagline}>Fitness is better shared</Text>
+            <Text style={styles.tagline}>We make each other better</Text>
+            {/* The one place the name is explained. Everywhere else the
+                product carries it: rivals as the people who lift you. */}
+            <Text style={styles.taglineSub}>A rival isn't someone you're against. It's someone who brings out your best.</Text>
           </View>
 
           <View style={styles.buttons}>
@@ -121,6 +124,14 @@ const styles = StyleSheet.create({
     letterSpacing: 4,
     fontSize: 17,
     lineHeight: 22,
+  },
+  taglineSub: {
+    ...RivalType.bodyMd,
+    color: RivalColors.textSecondary,
+    textAlign: 'center',
+    fontSize: 14,
+    lineHeight: 21,
+    maxWidth: 300,
   },
   buttons: {
     gap: 4,
