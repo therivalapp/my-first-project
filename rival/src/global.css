@@ -53,6 +53,11 @@ input:focus, textarea:focus, button:focus, div:focus, [tabindex]:focus {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-3px); }
 }
+/* The notifications dropdown under the bell. */
+@keyframes rivalMenuIn {
+  0% { transform: scaleY(0.92); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
 @media (prefers-reduced-motion: reduce) {
-  [style*="rivalPodium"], [style*="rivalCrown"] { animation: none !important; }
+  [style*="rivalPodium"], [style*="rivalCrown"], [style*="rivalMenuIn"] { animation: none !important; }
 }

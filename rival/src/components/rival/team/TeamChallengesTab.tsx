@@ -23,7 +23,7 @@ export const CHALLENGE_METRICS: Array<{ value: ChallengeMetric; label: string; u
   { value: 'distance', label: 'Distance', unit: 'km' },
   { value: 'elevation', label: 'Elevation', unit: 'm' },
   { value: 'duration', label: 'Time', unit: 'hrs' },
-  { value: 'activities', label: 'Sessions', unit: 'sessions' },
+  { value: 'activities', label: 'Activities', unit: 'activities' },
 ];
 
 type Status = 'pending' | 'active' | 'declined' | 'completed';
@@ -119,6 +119,9 @@ export function TeamChallengesTab({
   isAdmin,
   nameFor,
   refreshKey = 0,
+  teamGoal = null,
+  onEditTeamGoal,
+  onEndTeamGoal,
 }: {
   leagueId: string;
   teamName: string;
@@ -127,6 +130,10 @@ export function TeamChallengesTab({
   nameFor: (userId: string) => string;
   /** Bump to reload, e.g. after a challenge is sent from the Members tab. */
   refreshKey?: number;
+  /** The team's shared goal (the ring on the team page), if one is running. */
+  teamGoal?: { title: string; detail: string } | null;
+  onEditTeamGoal?: () => void;
+  onEndTeamGoal?: () => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
@@ -230,6 +237,38 @@ export function TeamChallengesTab({
 
   return (
     <View style={{ gap: 22 }}>
+      {/* ---- The team's shared challenge ----
+          Managed here, beside the other challenges, rather than from a tap on
+          the ring or from Team settings. Admins start, edit and end it;
+          everyone else sees what the team is working towards. */}
+      {(teamGoal || isAdmin) && (
+        <View style={{ gap: 10 }}>
+          <Text style={s.sectionTitle}>Team challenge</Text>
+          {teamGoal ? (
+            <View style={s.card}>
+              <Text style={s.cardKicker}>TOGETHER</Text>
+              <Text style={s.cardTitle}>{teamGoal.title}</Text>
+              <Text style={s.cardDetail}>{teamGoal.detail}</Text>
+              {isAdmin && (
+                <View style={s.btnRow}>
+                  <TouchableOpacity style={s.secondaryBtn} onPress={onEndTeamGoal}>
+                    <Text style={s.secondaryBtnText}>End challenge</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={s.primaryBtn} onPress={onEditTeamGoal}>
+                    <Text style={s.primaryBtnText}>Edit</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          ) : (
+            <TouchableOpacity style={s.emptyCard} onPress={onEditTeamGoal} activeOpacity={0.8}>
+              <RivalIcon name="target" size={22} color={RivalColors.accentText} />
+              <Text style={s.emptyText}>Start a team challenge: one shared goal everyone's training counts towards.</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
       {/* ---- Teammate challenges ---- */}
       <View style={{ gap: 10 }}>
         <Text style={s.sectionTitle}>Teammate challenges</Text>

@@ -6,7 +6,7 @@ import { supabase, getAuthUser } from '../lib/supabase';
 import { formatTeamName } from '../lib/identity';
 import { RivalTopNav, RivalIcon, RivalWarm, rm } from '../components/rival';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
-import { getUnreadChats } from '../lib/unreadChats';
+import { getUnreadChats, latestMessageByLeague } from '../lib/unreadChats';
 import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 
 // Same per-name color assignment as team-feed.tsx's team rail — kept as a
@@ -67,20 +67,15 @@ export default function MessagesScreen() {
       return;
     }
 
-    const [{ data: leagues }, { data: messages }, unread] = await Promise.all([
+    const [{ data: leagues }, lastByLeague, unread] = await Promise.all([
       supabase.from('leagues').select('id, name, logo_url').in('id', leagueIds),
-      // Newest-first across every team at once, then keep just the first (most
-      // recent) row per league_id below — one round trip instead of N.
-      supabase.from('league_messages').select('league_id, user_id, body, created_at').in('league_id', leagueIds).eq('kind', 'text').order('created_at', { ascending: false }),
+      // Just the newest message per team, not every message ever sent.
+      latestMessageByLeague<{ league_id: string; user_id: string; body: string; created_at: string }>(leagueIds, 'league_id, user_id, body, created_at'),
       // Shared with the Chat tab's badge — a badge reading "2" over a list
       // showing three dots is worse than showing no badge at all.
       getUnreadChats(true),
     ]);
 
-    const lastByLeague = new Map<string, { user_id: string; body: string; created_at: string }>();
-    for (const m of messages ?? []) {
-      if (!lastByLeague.has(m.league_id)) lastByLeague.set(m.league_id, m);
-    }
 
     const rows: ThreadRow[] = (leagues ?? [])
       .map((l) => {

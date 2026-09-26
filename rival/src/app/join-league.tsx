@@ -1,14 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RivalColors, RivalButtonColors } from '../constants/rivalTheme';
 import { RivalIcon, RivalBackButton, RivalMobileHeader, RivalRowLink, RivalTopNav, rm } from '../components/rival';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 import { StyleSheet, TouchableOpacity, View, Text, TextInput, ScrollView, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
+import { clearPendingInvite, readPendingInvite } from '../lib/pendingInvite';
 import { supabase, getAuthUser } from '../lib/supabase';
 
 export default function JoinLeagueScreen() {
   const [code, setCode] = useState('');
+  // From an invite link, or one opened before signing in.
+  const { code: codeParam } = useLocalSearchParams<{ code?: string }>();
+  useEffect(() => {
+    const invited = (codeParam || readPendingInvite() || '').trim().toUpperCase();
+    if (invited) setCode(invited);
+  }, [codeParam]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const { width } = useWindowDimensions();
@@ -49,6 +56,7 @@ export default function JoinLeagueScreen() {
     }
 
     setLoading(false);
+    clearPendingInvite();
     router.replace({ pathname: '/team-hub', params: { id: result.league_id } });
   }
 

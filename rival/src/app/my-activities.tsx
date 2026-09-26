@@ -11,6 +11,7 @@ import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { computeActivityInsight, InsightTone } from '../lib/activityInsights';
 import { loadScoringConfig, DEFAULT_MULTIPLIER, ScoringConfig } from '../lib/effort';
+import { rm } from '../components/rival/RivalMobile';
 import { RivalTopNav, RivalIcon, activityIconName, RivalFixedBackground, ActivityDiaryViewer, DiaryActivity, PhotoPositioner, CoverImage } from '../components/rival';
 import { MediaPicker, pickMediaFiles, type MediaItem } from '../components/rival/MediaPicker';
 import { MEDIA_COLUMNS, existingAsItems, saveArrangement, sortMedia, type MediaRow } from '../lib/activityMedia';
@@ -424,16 +425,25 @@ export default function MyActivitiesScreen() {
       const thisWeek = data.filter(a => getMondayStart(new Date(a.started_at)) === currentWeekStart);
       setThisWeekTotal(Math.round(thisWeek.reduce((s, a) => s + (a.effort_score || 0), 0) * 10) / 10);
 
+      // The journal can show now; photos fill in when they arrive.
+      setLoading(false);
+
       const activityIds = data.map(a => a.id);
       if (activityIds.length > 0) {
-        const { data: mediaData } = await supabase
+        // In batches: every id goes into the request's web address, and a long
+        // history (hundreds of ids) made one address too long to be accepted,
+        // so no photos loaded at all. Batches run side by side.
+        const batches: string[][] = [];
+        for (let i = 0; i < activityIds.length; i += 120) batches.push(activityIds.slice(i, i + 120));
+        const results = await Promise.all(batches.map((ids) => supabase
           .from('activity_media')
           .select(MEDIA_COLUMNS)
-          .in('activity_id', activityIds)
-          .order('created_at', { ascending: true });
+          .in('activity_id', ids)
+          .order('created_at', { ascending: true })));
+        const mediaData = results.flatMap((r) => (r.data as MediaRow[] | null) ?? []);
 
         const newMediaMap: Record<string, MediaRow[]> = {};
-        (mediaData || []).forEach((m: MediaRow) => {
+        mediaData.forEach((m: MediaRow) => {
           if (!newMediaMap[m.activity_id]) newMediaMap[m.activity_id] = [];
           newMediaMap[m.activity_id].push(m);
         });
@@ -979,9 +989,22 @@ export default function MyActivitiesScreen() {
 
             {!loading && groups.length === 0 && (
               <View style={[styles.jWeekPage, pagerHeight ? { height: pagerHeight } : null]}>
-                <Text style={styles.emptyText}>
-                  {allActivities.length === 0 ? 'No activities yet. Add an activity or connect a device.' : 'No activities match this filter.'}
-                </Text>
+                {allActivities.length === 0 ? (
+                  // A first-time visitor: say what goes here and give both ways in.
+                  <View style={[rm.card, styles.firstEmpty]}>
+                    <View style={rm.iconCircle}><RivalIcon name="pulse" size={20} color={RivalColors.accentText} /></View>
+                    <Text style={rm.serifTitleSm}>No activities yet</Text>
+                    <Text style={[rm.hint, { textAlign: 'center' }]}>Every activity you add or sync appears here, week by week, with the Effort it earned.</Text>
+                    <TouchableOpacity style={[rm.primary, styles.firstEmptyBtn]} onPress={() => router.push('/add-workout')}>
+                      <Text style={rm.primaryText}>Add activity</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[rm.ghost, styles.firstEmptyBtn]} onPress={() => router.push({ pathname: '/profile', params: { tab: 'apps' } })}>
+                      <Text style={rm.ghostText}>Connect Strava</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <Text style={styles.emptyText}>No activities match this filter.</Text>
+                )}
               </View>
             )}
 
@@ -2027,7 +2050,7 @@ export default function MyActivitiesScreen() {
                     </View>
 
                     {uploadErrorActivityId === activity.id && uploadError && (
-                      <Text style={styles.inlineUploadError}>⚠️ {uploadError}</Text>
+                      <Text style={styles.inlineUploadError}>{uploadError}</Text>
                     )}
 
                     {/* Media gallery — only stacked here on narrow cards; wide cards
@@ -2152,6 +2175,8 @@ export default function MyActivitiesScreen() {
 }
 
 const styles = StyleSheet.create({
+  firstEmpty: { alignItems: 'center', marginTop: 24, paddingVertical: 24 },
+  firstEmptyBtn: { alignSelf: 'stretch' },
   root: { flex: 1, backgroundColor: RivalColors.surfaceLow },
   scrim: { position: 'fixed' as any, top: 0, left: 0, right: 0, height: '100vh' as any, backgroundColor: 'rgba(14,14,14,0.55)' },
   // Solid backing behind just the top nav strip on mobile — see the comment

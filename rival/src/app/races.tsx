@@ -520,8 +520,8 @@ export default function RacesScreen() {
               <TextInput style={inp} placeholder="00:00:00" placeholderTextColor={RivalColors.textSecondary} value={goalFinishTime} onChangeText={v => setGoalFinishTime(formatGoalTimeMask(v))} keyboardType="number-pad" autoCapitalize="none" />
               <Text style={styles.goalTimeHint}>
                 {goalFinishTime.trim()
-                  ? (m ? `Goal: ${goalFinishTime.trim()}.` : `🎯 Aiming for ${goalFinishTime.trim()} — let's make it happen.`)
-                  : 'Set a time to aim for — you can always chase it down on race day.'}
+                  ? `Goal: ${goalFinishTime.trim()}.`
+                  : 'A time to aim for. It can be changed later.'}
               </Text>
 
               {m ? (

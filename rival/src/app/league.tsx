@@ -10,7 +10,7 @@ import { getLevel } from '../lib/xp';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
 import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { getSeasonStartISO, daysUntilSeasonEnd } from '../lib/season';
-import { matchCanonicalLift } from './scan-workout';
+import { matchCanonicalLift } from '../lib/lifts';
 import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 import { ACTIVITY_ICONS } from '../constants/activityIcons';
@@ -1465,7 +1465,7 @@ export default function LeagueScreen() {
             onPress={() => toggleRsvp(msg.id)}
           >
             <Text style={[styles.rsvpBtnText, joined && styles.rsvpBtnTextLeave]}>
-              {joined ? "I'm out" : "I'm in!"}
+              {joined ? 'Leave' : 'Join'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -1607,14 +1607,14 @@ export default function LeagueScreen() {
                         </>
                       ) : paceDeltaPct >= 0 ? (
                         <>
-                          <Text style={styles.paceTitle}>Keep it up!</Text>
+                          <Text style={styles.paceTitle}>Ahead of pace</Text>
                           <Text style={styles.paceSub}>
                             <Text style={styles.paceSubBold}>{paceDeltaPct}% ahead</Text> of the pace needed to hit the goal.
                           </Text>
                         </>
                       ) : (
                         <>
-                          <Text style={styles.paceTitle}>Let's pick it up</Text>
+                          <Text style={styles.paceTitle}>Behind pace</Text>
                           <Text style={styles.paceSub}>
                             Needs <Text style={styles.paceSubBold}>{(Math.round(neededPerDay * 10) / 10).toLocaleString()} {unit}/day</Text> to hit the goal.
                           </Text>
@@ -1860,7 +1860,7 @@ export default function LeagueScreen() {
     <>
         {/* Let's Train — instant invite */}
         <TouchableOpacity style={styles.letsTrainBtn} onPress={() => setShowQuickTrain(!showQuickTrain)}>
-          <Text style={styles.letsTrainBtnText}>{showQuickTrain ? '✕ Cancel' : "🟢 Let's Train"}</Text>
+          <Text style={styles.letsTrainBtnText}>{showQuickTrain ? 'Cancel' : 'Train together now'}</Text>
         </TouchableOpacity>
 
         {showQuickTrain && (

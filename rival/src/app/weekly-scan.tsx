@@ -10,7 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { calculateEffortScore, loadScoringConfig } from '../lib/effort';
 import { findMatchingRaceId } from '../lib/raceMatch';
-import { matchCanonicalLift } from './scan-workout';
+import { matchCanonicalLift } from '../lib/lifts';
 
 type DayImage = { uri: string; base64: string; mimeType: string };
 type DayState = {

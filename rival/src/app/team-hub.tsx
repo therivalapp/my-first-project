@@ -39,7 +39,7 @@ import { TeamChallengesTab, ChallengeTeammateSheet } from '../components/rival/t
 import { WeeklyStandings } from '../components/rival/team/WeeklyStandings';
 import { EncourageSheet, loadEncouragedToday } from '../components/rival/team/EncourageSheet';
 import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
-import { matchCanonicalLift } from './scan-workout';
+import { matchCanonicalLift } from '../lib/lifts';
 
 // Matches chat.tsx's SESSION_GRACE_MS — a session stays "upcoming" for 12
 // hours past its start, since sessions carry no duration.
@@ -118,6 +118,8 @@ function goalValue(a: { effort_score: number | null; distance_meters: number | n
 type League = {
   id: string; name: string; created_at: string; logo_url: string | null; invite_code: string | null;
   goal_metric: GoalMetric | null; goal_target: number | null; goal_target_date: string | null;
+  description?: string | null;
+  created_by?: string;
 };
 type Member = { user_id: string; role: string; users: { display_name: string | null; avatar_url: string | null } };
 type ActivityRow = {
@@ -380,6 +382,24 @@ export default function TeamHub() {
     setTimeout(() => setCodeCopied(false), 1800);
   }
 
+  async function endTeamGoal() {
+    if (!league) return;
+    const ok = await confirmAction({
+      title: 'End the team challenge?',
+      message: 'The challenge is removed for everyone. Activities and Effort are not affected.',
+      confirmLabel: 'End challenge',
+      destructive: true,
+    });
+    if (!ok) return;
+    const { data, error } = await supabase
+      .from('leagues')
+      .update({ goal_metric: null, goal_target: null, goal_target_date: null })
+      .eq('id', league.id)
+      .select('id');
+    if (error || !data?.length) { notify("Couldn't end the challenge", error?.message ?? 'Only team admins can do this.'); return; }
+    setLeague({ ...league, goal_metric: null, goal_target: null, goal_target_date: null });
+  }
+
   async function leaveTeam() {
     if (!league) return;
     const last = members.length <= 1;
@@ -387,7 +407,9 @@ export default function TeamHub() {
       title: `Leave ${formatTeamName(league.name)}?`,
       message: last
         ? "You're the last member. Leaving will permanently delete the team, including its chat, posts and challenge history."
-        : 'You can rejoin later with the invite code.',
+        : league.created_by === currentUserId
+          ? 'You are the founder. The team passes to the longest-standing admin, or the longest-standing member if there are no other admins. To choose who, use Make founder in Team settings first.'
+          : 'You can rejoin later with the invite code.',
       confirmLabel: last ? 'Leave and delete' : 'Leave team',
       destructive: true,
     });
@@ -400,10 +422,14 @@ export default function TeamHub() {
   const { scrollProps: pullProps, indicator: pullIndicator } = usePullToRefresh(() => load());
 
   async function load() {
-    setLoading(true);
+    // A refresh of the team already on screen keeps it there; only opening a
+    // different team (or the first open) shows the loading state.
+    if (!league || league.id !== id) setLoading(true);
     const [{ data: { user } }, { data: leagueData }, { data: membersData }] = await Promise.all([
       getAuthUser(),
-      supabase.from('leagues').select('id, name, created_at, logo_url, invite_code, goal_metric, goal_target, goal_target_date').eq('id', id).single(),
+      // select('*'): a named column the database doesn't have yet fails the whole
+      // query, which would blank the team page.
+      supabase.from('leagues').select('*').eq('id', id).single(),
       supabase
         .from('league_members')
         .select('user_id, role, users(display_name, avatar_url)')
@@ -519,6 +545,10 @@ export default function TeamHub() {
 
       const boardList = (board || []) as BoardPost[];
       setBoardPosts(boardList);
+
+      // The page is ready to show; reactions and comments fill in a moment
+      // later rather than holding everything else behind the loading state.
+      setLoading(false);
 
       // Reactions and comments for the feed AND the board, together.
       const feedIds = feedList.map(a => a.id);
@@ -1004,6 +1034,7 @@ export default function TeamHub() {
           <View style={styles.body}>
             {activeTab === 'Overview' && (
               <>
+                {league.description ? <Text style={styles.teamAbout}>{league.description}</Text> : null}
                 {hasGoal && (
                   <>
                     <View style={[styles.paceCard, paceCardWeb]}>
@@ -1204,7 +1235,7 @@ export default function TeamHub() {
                 )}
 
                 <View style={styles.sectionHead}>
-                  <Text style={styles.sectionTitle}>Recent Activity</Text>
+                  <Text style={styles.sectionTitle}>Recent activity</Text>
                 </View>
                 {recentActivity.length === 0 ? (
                   <Text style={styles.emptyText}>No activity yet.</Text>
@@ -1216,11 +1247,16 @@ export default function TeamHub() {
                       return (
                         <View key={a.id} style={[styles.activityRow, i === recentActivity.length - 1 && { borderBottomWidth: 0 }]}>
                           <RivalAvatar uri={memberAvatar(a.user_id)} name={name} size={34} />
-                          <View>
-                            <Text style={styles.activityText}>
-                              <Text style={styles.activityName}>{name}</Text> logged {a.name || a.activity_type}{dist ? ` · ${dist}` : ''}
+                          {/* Two lines that each fit the row: who and when, then what.
+                              One run-on sentence ran past the card's edge. */}
+                          <View style={styles.activityBody}>
+                            <View style={styles.activityTop}>
+                              <Text style={[styles.activityText, styles.activityName, styles.activityShrink]} numberOfLines={1}>{name}</Text>
+                              <Text style={styles.activityTime}>{timeAgo(a.started_at)}</Text>
+                            </View>
+                            <Text style={styles.activityWhat} numberOfLines={1}>
+                              {a.name || a.activity_type}{dist ? ` · ${dist}` : ''}
                             </Text>
-                            <Text style={styles.activityTime}>{timeAgo(a.started_at)}</Text>
                           </View>
                         </View>
                       );
@@ -1269,6 +1305,12 @@ export default function TeamHub() {
                 isAdmin={isAdmin}
                 nameFor={memberName}
                 refreshKey={challengesRefresh}
+                teamGoal={league.goal_metric && league.goal_target && league.goal_target_date ? {
+                  title: GOAL_METRIC_LABEL[league.goal_metric],
+                  detail: `${league.goal_target.toLocaleString()} ${GOAL_METRIC_UNIT[league.goal_metric]} · Due ${new Date(league.goal_target_date).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}`,
+                } : null}
+                onEditTeamGoal={() => router.push({ pathname: '/create-team-challenge', params: { id } })}
+                onEndTeamGoal={endTeamGoal}
               />
             )}
 
@@ -1906,9 +1948,14 @@ const styles = StyleSheet.create({
   contribKm: { color: RivalColors.textSecondary, fontSize: 13, fontWeight: '700' },
 
   activityRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
-  activityText: { color: '#fff', fontSize: 13 },
+  activityText: { color: '#fff', fontSize: 14 },
   activityName: { fontFamily: SERIF, fontStyle: 'italic', fontWeight: '700' },
-  activityTime: { color: RivalColors.textSecondary, fontSize: 11.5, marginTop: 1 },
+  activityBody: { flex: 1, minWidth: 0, gap: 2 },
+  activityTop: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  activityShrink: { flexShrink: 1 },
+  activityTime: { color: RivalColors.textSecondary, fontSize: 11.5, marginLeft: 'auto' },
+  activityWhat: { color: 'rgba(255,255,255,0.72)', fontSize: 13 },
+  teamAbout: { fontSize: 14, lineHeight: 20, color: 'rgba(255,255,255,0.72)', textAlign: 'center', paddingHorizontal: 8 },
   emptyText: { fontSize: 13, color: RivalColors.textSecondary, textAlign: 'center', paddingVertical: 20 },
 
   // Post card — ported verbatim from team-feed.tsx so the Feed tab here

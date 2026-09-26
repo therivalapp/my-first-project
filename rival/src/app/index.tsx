@@ -1,14 +1,17 @@
 import { useEffect } from 'react';
-import { StyleSheet, TouchableOpacity, View, Text, Image, Platform } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, Image, Platform, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { RivalButton } from '../components/rival';
-import { RivalColors, RivalType } from '../constants/rivalTheme';
+import { RivalColors, RivalType, RivalSerifFamily } from '../constants/rivalTheme';
+import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
+import { rm } from '../components/rival/RivalMobile';
 
 const SMOKE_SOURCE = require('../../assets/images/backgrounds/optimized/podium-smoke.jpg');
 
 export default function WelcomeScreen() {
+  const mobile = useWindowDimensions().width < BREAKPOINT_WIDE_LAYOUT;
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
@@ -26,23 +29,34 @@ export default function WelcomeScreen() {
           <Text style={styles.logo}>RIVAL</Text>
 
           <View style={styles.taglineWrap}>
-            <Text style={styles.tagline}>We make each other better</Text>
+            <Text style={[styles.tagline, mobile && ms.tagline]}>We make each other better</Text>
             {/* The one place the name is explained. Everywhere else the
                 product carries it: rivals as the people who lift you. */}
             <Text style={styles.taglineSub}>A rival isn't someone you're against. It's someone who brings out your best.</Text>
           </View>
 
-          <View style={styles.buttons}>
-            <RivalButton
-              label="Let's Go"
-              onPress={() => router.push('/sign-up')}
-              labelStyle={{ textTransform: 'uppercase', letterSpacing: 2, fontWeight: '800' }}
-              style={{ paddingHorizontal: 19, paddingVertical: 11 }}
-            />
-            <TouchableOpacity onPress={() => router.push('/sign-in')} style={styles.signInLink}>
-              <Text style={styles.signInLinkText}>Sign In</Text>
-            </TouchableOpacity>
-          </View>
+          {mobile ? (
+            <View style={ms.buttons}>
+              <TouchableOpacity style={rm.primary} onPress={() => router.push('/sign-up')} accessibilityRole="button">
+                <Text style={rm.primaryText}>Get started</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => router.push('/sign-in')} style={styles.signInLink} accessibilityRole="button">
+                <Text style={ms.signIn}>Already have an account? <Text style={ms.signInStrong}>Sign in</Text></Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.buttons}>
+              <RivalButton
+                label="Get started"
+                onPress={() => router.push('/sign-up')}
+                labelStyle={{ textTransform: 'uppercase', letterSpacing: 2, fontWeight: '800' }}
+                style={{ paddingHorizontal: 19, paddingVertical: 11 }}
+              />
+              <TouchableOpacity onPress={() => router.push('/sign-in')} style={styles.signInLink}>
+                <Text style={styles.signInLinkText}>Sign in</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </SafeAreaView>
       </View>
     </View>
@@ -145,4 +159,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+});
+
+// Phone: the tagline in the app's serif voice, and the one gradient pill.
+const ms = StyleSheet.create({
+  tagline: {
+    fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700',
+    textTransform: 'none', letterSpacing: 0, fontSize: 30, lineHeight: 36,
+  },
+  buttons: { alignSelf: 'stretch', gap: 4 },
+  signIn: { textAlign: 'center', fontSize: 14, color: 'rgba(255,255,255,0.6)' },
+  signInStrong: { color: RivalColors.accentText, fontWeight: '700' },
 });

@@ -13,33 +13,13 @@ import {
   type InboxItem,
 } from '@/lib/inbox';
 import { usePullToRefresh } from '@/components/rival/usePullToRefresh';
-import { RivalBackButton, RivalIcon, RivalTopNav, type RivalIconName } from '@/components/rival';
+import { RivalBackButton, RivalIcon, RivalTopNav } from '@/components/rival';
+import { INBOX_ICON_FOR, goToInboxSubject, inboxTimeAgo } from '@/components/rival/NotificationsMenu';
 import { RivalButtonColors, RivalColors, RivalRadius, RivalSerifFamily, RivalType } from '@/constants/rivalTheme';
 
 // The inbox. Items are answered where they sit rather than sending you off to
 // another screen to find the thing they are about — a notification you have to
 // go hunting after is just a reminder that you have work to do.
-
-const ICON_FOR: Record<InboxItem['kind'], RivalIconName> = {
-  reaction: 'star',
-  comment: 'reply',
-  join_request: 'groups',
-  short_activity: 'timerOutline',
-  team_joined: 'checkCircle',
-  activity_tag: 'groups',
-  tag_accepted: 'verified',
-};
-
-function timeAgo(iso: string): string {
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return `${Math.floor(days / 7)}w ago`;
-}
 
 export default function InboxScreen() {
   const [items, setItems] = useState<InboxItem[]>([]);
@@ -76,16 +56,6 @@ export default function InboxScreen() {
       return;
     }
     await load();
-  }
-
-  function goToSubject(item: InboxItem) {
-    if (item.kind === 'reaction' || item.kind === 'comment') {
-      router.push('/team-feed');
-    } else if (item.kind === 'team_joined' || item.kind === 'join_request') {
-      router.push('/team-hub');
-    } else if (item.kind === 'tag_accepted') {
-      router.push('/my-activities');
-    }
   }
 
   const unresolvedFirst = [...items].sort((a, b) => {
@@ -125,15 +95,15 @@ export default function InboxScreen() {
                   style={styles.cardMain}
                   activeOpacity={open ? 1 : 0.7}
                   disabled={open}
-                  onPress={() => goToSubject(item)}
+                  onPress={() => goToInboxSubject(item)}
                 >
                   <View style={styles.iconWrap}>
-                    <RivalIcon name={ICON_FOR[item.kind]} size={17} color={RivalColors.accentText} />
+                    <RivalIcon name={INBOX_ICON_FOR[item.kind]} size={17} color={RivalColors.accentText} />
                   </View>
                   <View style={styles.textWrap}>
                     <Text style={styles.cardTitle}>{item.title}</Text>
                     {item.body ? <Text style={styles.cardBody}>{item.body}</Text> : null}
-                    <Text style={styles.cardWhen}>{timeAgo(item.created_at)}</Text>
+                    <Text style={styles.cardWhen}>{inboxTimeAgo(item.created_at)}</Text>
                   </View>
                 </TouchableOpacity>
 

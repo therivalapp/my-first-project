@@ -7,12 +7,36 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { LEVELS, getLevel } from '../lib/xp';
+import { rankPace, type RankPace } from '../lib/rankPace';
 import { RivalIcon, RivalTopNav, RivalPageHeader, RivalBackButton, RivalMobileHeader, RivalWarm, rm } from '../components/rival';
+
+// A rough idea of the training each rank takes, for a person reading the list:
+// Effort earned over a whole year at a typical mix of activities. About 70
+// Effort an hour is the average across RIVAL's activities (a run earns ~80,
+// a gym workout ~60), so this is a guide, not a promise.
+const TYPICAL_EFFORT_PER_HOUR = 70;
+// A realistic year of training — about six weeks go to holidays, illness,
+// injury or a taper, so the weekly figure is spread over the rest.
+const TRAINING_WEEKS = 46;
+
+// "About 36 h of training", or once it's a regular habit, "About 230 h in
+// the year · 4.5 h a week". The early ranks come in the first weeks, so a
+// weekly figure for them (minutes) would describe nobody's actual training.
+function weeklyGuide(minXp: number): string | null {
+  if (minXp <= 0) return null;
+  const hours = minXp / TYPICAL_EFFORT_PER_HOUR;
+  const total = hours < 20 ? Math.max(1, Math.round(hours)) : Math.round(hours / 5) * 5;
+  const perWeek = hours / TRAINING_WEEKS;
+  if (perWeek < 1) return `About ${total} h of training`;
+  const w = perWeek < 10 ? Math.round(perWeek * 2) / 2 : Math.round(perWeek);
+  return `About ${total} h in the year · ${w} h a week`;
+}
 
 export default function RanksScreen() {
   const { width } = useWindowDimensions();
   const wide = width >= BREAKPOINT_WIDE_LAYOUT;
   const [totalXp, setTotalXp] = useState(0);
+  const [pace, setPace] = useState<RankPace | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -27,6 +51,17 @@ export default function RanksScreen() {
         .gte('started_at', getSeasonStartISO());
       const xp = data?.reduce((sum, a) => sum + (a.effort_score || 0), 0) ?? 0;
       setTotalXp(xp);
+
+      // When their training began, for the pace projection: anyone with
+      // activities from before this year is measured from 1 January.
+      const { data: first } = await supabase
+        .from('activities')
+        .select('started_at')
+        .eq('user_id', user.id)
+        .order('started_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      setPace(rankPace({ yearEffort: xp, firstActivityEver: first ? new Date(first.started_at) : null }));
     }
     load();
   }, []);
@@ -57,8 +92,41 @@ export default function RanksScreen() {
             )}
           </View>
 
+          {/* Where this year is heading. A projection only — rank is always
+              what has been earned. A latecomer also sees what a full year at
+              their pace would reach: something to aim at next year. */}
+          {pace ? (
+            <View style={[rm.card, ms.pace]}>
+              <View style={ms.paceRow}>
+                <RivalIcon name="trendUp" size={18} color={RivalColors.accentText} />
+                <View style={{ flex: 1 }}>
+                  <Text style={rm.label}>On pace for</Text>
+                  <Text style={[ms.paceRank, { color: pace.yearEnd.level.color }]}>{pace.yearEnd.level.name}</Text>
+                  <Text style={rm.hint}>
+                    About {pace.yearEnd.effort.toLocaleString()} Effort by 31 December at the current pace.
+                  </Text>
+                </View>
+              </View>
+              {pace.fullYear ? (
+                <View style={[ms.paceRow, ms.paceDivider]}>
+                  <RivalIcon name="calendar" size={18} color={RivalColors.accentText} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={rm.label}>A full year at this pace</Text>
+                    <Text style={[ms.paceRank, { color: pace.fullYear.level.color }]}>{pace.fullYear.level.name}</Text>
+                    <Text style={rm.hint}>
+                      Based on training since {pace.start.toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}. The first full year begins on 1 January.
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
           <Text style={ms.explainer}>
             Rank is earned each year. Everyone starts again on 1 January. Lifetime totals never reset.
+          </Text>
+          <Text style={ms.guideNote}>
+            The times show roughly how much training reaches each rank within a year, with rest days and about six weeks off for holidays, illness or a taper. Activities earn Effort at different rates, so they are a guide.
           </Text>
 
           <View style={{ gap: 8 }}>
@@ -74,6 +142,7 @@ export default function RanksScreen() {
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[ms.name, { color: isUnlocked ? lvl.color : 'rgba(255,255,255,0.35)' }]}>{lvl.name}</Text>
                     <Text style={rm.hint}>{lvl.minXp.toLocaleString()}{isLast ? '+' : ` – ${lvl.maxXp.toLocaleString()}`} Effort</Text>
+                    {weeklyGuide(lvl.minXp) ? <Text style={ms.guide}>{weeklyGuide(lvl.minXp)}</Text> : null}
                   </View>
                   {isCurrent ? (
                     <View style={[ms.you, { backgroundColor: lvl.color }]}><Text style={ms.youText}>YOU</Text></View>
@@ -258,6 +327,12 @@ const styles = StyleSheet.create({
 
 // Mobile only — the RIVAL look (see RivalMobile.tsx).
 const ms = StyleSheet.create({
+  pace: { gap: 14 },
+  paceRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
+  paceDivider: { borderTopWidth: 1, borderTopColor: RivalWarm.hairline, paddingTop: 14 },
+  paceRank: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontWeight: '700', fontSize: 22, lineHeight: 28, marginTop: 2 },
+  guide: { fontSize: 12, fontWeight: '600', color: RivalColors.accentText, marginTop: 2 },
+  guideNote: { fontSize: 12, lineHeight: 17, color: RivalWarm.muted, textAlign: 'center', paddingHorizontal: 12, marginTop: -6 },
   explainer: { fontSize: 13, lineHeight: 19, color: 'rgba(255,255,255,0.6)', textAlign: 'center', paddingHorizontal: 16 },
   content: { paddingBottom: 120 },
   heroRank: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 40, fontWeight: '700', lineHeight: 46 },

@@ -20,7 +20,7 @@ import { computeGoalProgress, goalUnit, GoalRow } from '../lib/goalProgress';
 // to metres at display time only, for these activity types only.
 const METERS_SPORTS = new Set(['Swim', 'Rowing']);
 import { formatTeamName, formatRaceName } from '../lib/identity';
-import { RivalButton, RivalCard, RivalProgressBar, RivalChallengeRing, RivalIcon, RivalTopNav, activityIconName, type RivalIconName } from '../components/rival';
+import { RivalButton, RivalCard, RivalProgressBar, RivalChallengeRing, RivalIcon, RivalTopNav, rm, activityIconName, type RivalIconName } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RivalFontFamily, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
@@ -517,7 +517,18 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                       ))}
                     </View>
                     <View style={styles.mGhostStage} />
-                    <MHeading title="Take the lead" subtitle="Earn the first Effort" />
+                    {leader === null ? (
+                      // Not in a team yet: the podium needs people, so the way
+                      // forward is finding them rather than earning Effort.
+                      <>
+                        <MHeading title="Train together" subtitle="Join a team to fill the podium" />
+                        <TouchableOpacity style={[rm.ghost, styles.mLeaderFindTeam]} onPress={() => router.push('/discover-leagues')}>
+                          <Text style={rm.ghostText}>Find a team</Text>
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <MHeading title="Take the lead" subtitle="Earn the first Effort" />
+                    )}
                   </View>
                 ) : (() => {
                   const { standings, daysRemaining } = leader;
@@ -759,7 +770,6 @@ function WeeklyLeaderCardBody({ leader }: { leader: WeeklyLeader | null }) {
                             ) : null}
                             <View style={styles.mStatusCountdown}>
                               <View style={[styles.mStatusRule, styles.mStatusRuleLeft]} />
-                              <RivalIcon name="timerOutline" size={12} color="rgba(255,181,158,0.7)" />
                               <Text style={styles.mStatusCountdownText}>{endsLabel}</Text>
                               <View style={[styles.mStatusRule, styles.mStatusRuleRight]} />
                             </View>
@@ -806,18 +816,18 @@ export default function HomeScreen() {
   const [legacyWeek, setLegacyWeek] = useState({ effort: 0, count: 0, km: 0, elevM: 0 });
   const [lastActivity, setLastActivity] = useState<{ type: string | null; startedAt: string } | null>(null);
   const [seasonEffortTotal, setSeasonEffortTotal] = useState(0);
-  // Recognition: the latest activity of yours someone reacted to in the last
-  // three days (the slim line under Add activity), and lifetime Respect
-  // received (a Legacy milestone candidate).
-  const [recognition, setRecognition] = useState<{
-    names: string[]; faces: { id: string; url: string | null; initial: string }[];
-    others: number; inspiredOnly: boolean; activityType: string | null;
-  } | null>(null);
+  // Lifetime recognition received — Legacy's Impact page and a milestone.
   const [respectReceived, setRespectReceived] = useState(0);
   const [impact, setImpact] = useState({ respect: 0, inspired: 0, people: 0 });
+  // The same totals for this week alone — the Impact page's "+N this week".
+  const [impactWeek, setImpactWeek] = useState({ respect: 0, inspired: 0, people: 0 });
   const hasImpact = impact.respect + impact.inspired > 0;
   const [legacyBoxWidth, setLegacyBoxWidth] = useState(0);
   const [legacyPage, setLegacyPage] = useState(0);
+  // The Legacy headline figure swipes between lifetime Effort and this year's.
+  const [heroWidth, setHeroWidth] = useState(0);
+  const [heroPage, setHeroPage] = useState(0);
+  const heroScrollRef = useRef<ScrollView>(null);
   const legacyScrollRef = useRef<ScrollView>(null);
   const [featuredGoal, setFeaturedGoal] = useState<FeaturedGoal | null>(null);
   // False until the first load finishes. Every figure above starts empty, not
@@ -846,34 +856,14 @@ export default function HomeScreen() {
     }
   }
 
-  async function loadRecognition(uId: string, activities: any[]) {
+  async function loadImpact(uId: string, activities: any[]) {
     const all = await fetchReactionsOn(activities.map((a) => a.id));
     const totals = impactTotals(all, uId);
     setRespectReceived(totals.respect);
     setImpact(totals);
+    const weekStart = getMondayOfWeek(new Date()).getTime();
+    setImpactWeek(impactTotals(all.filter((r) => new Date(r.created_at).getTime() >= weekStart), uId));
 
-    // Someone reacting within the last three days, to any of your activities.
-    const since = Date.now() - 3 * 86400000;
-    const recent = all
-      .filter((r) => r.user_id !== uId && new Date(r.created_at).getTime() >= since)
-      .sort((a, b) => b.created_at.localeCompare(a.created_at));
-    if (recent.length === 0) { setRecognition(null); return; }
-
-    const targetId = recent[0].target_id;
-    const onTarget = recent.filter((r) => r.target_id === targetId);
-    const reactorIds = [...new Set(onTarget.map((r) => r.user_id))];
-    const { data: people } = await supabase.from('users').select('id, display_name, avatar_url').in('id', reactorIds.slice(0, 3));
-    const byId: Record<string, any> = {};
-    (people || []).forEach((p: any) => { byId[p.id] = p; });
-    const shown = reactorIds.slice(0, 3).filter((id) => byId[id]);
-    const activity = activities.find((a) => a.id === targetId);
-    setRecognition({
-      names: shown.slice(0, 1).map((id) => firstNameOnly(byId[id])),
-      faces: shown.map((id) => ({ id, url: byId[id].avatar_url || null, initial: (firstNameOnly(byId[id])[0] || '?').toUpperCase() })),
-      others: Math.max(0, reactorIds.length - 1),
-      inspiredOnly: onTarget.every((r) => r.emoji === 'inspired'),
-      activityType: activity?.activity_type ?? null,
-    });
   }
 
   async function loadAllData() {
@@ -885,10 +875,20 @@ export default function HomeScreen() {
     const today = todayLocalStr();
 
     // Phase 1: own data + strava status
+    // Every request is a round trip to the database, so nothing waits on
+    // anything it doesn't need: the team standings only need the list of
+    // teams, so they start the moment that arrives, alongside the person's
+    // own history rather than after it. Promise.resolve runs the query once —
+    // a query builder is a thenable that runs again on every .then.
+    const leaguesP = Promise.resolve(
+      supabase.from('league_members').select('league_id, leagues(id, name, invite_code, logo_url)').eq('user_id', uId).eq('status', 'active'),
+    );
+    const teamsDone = leaguesP.then((res) => loadTeams(uId, res.data ?? [])).catch(() => {});
+
     const [stravaRes, activitiesRes, leaguesRes, raceRes, userProfileRes, goalsRes] = await Promise.all([
       supabase.from('fitness_connections').select('user_id').eq('user_id', uId).eq('provider', 'strava').maybeSingle(),
       fetchAllActivities(uId, 'id, started_at, effort_score, distance_meters, elevation_meters, activity_type, duration_seconds'),
-      supabase.from('league_members').select('league_id, leagues(id, name, invite_code, logo_url)').eq('user_id', uId).eq('status', 'active'),
+      leaguesP,
       supabase.from('races').select('name, race_date').eq('user_id', uId).gte('race_date', today).order('race_date', { ascending: true }).limit(1).maybeSingle(),
       supabase.from('users').select('avatar_url').eq('id', uId).single(),
       supabase.from('goals').select('*').eq('user_id', uId),
@@ -916,9 +916,7 @@ export default function HomeScreen() {
     const myAvatarUrl: string | null = userProfileRes.data?.avatar_url || null;
     setAvatarUrl(myAvatarUrl);
 
-    const leagueList = leaguesRes.data?.map((m: any) => m.leagues).filter(Boolean) ?? [];
-    setLeagues(leagueList);
-    const leagueIds = leaguesRes.data?.map((m: any) => m.league_id) ?? [];
+    if (!leaguesRes.data?.length) setLeagues([]);
 
     const activities = activitiesRes;
     setTotalDistanceKm(Math.round(activities.reduce((s, a) => s + (a.distance_meters || 0), 0) / 1000));
@@ -948,8 +946,9 @@ export default function HomeScreen() {
     const latest = activities.reduce<any>((best, a) => (!best || a.started_at > best.started_at ? a : best), null);
     setLastActivity(latest ? { type: latest.activity_type ?? null, startedAt: latest.started_at } : null);
 
-    // Recognition runs alongside the rest of Home rather than holding it up.
-    loadRecognition(uId, activities).catch(() => {});
+    // Impact (Legacy's second page) loads alongside the rest of Home rather
+    // than holding it up. Individual reactions are notifications, in the inbox.
+    loadImpact(uId, activities).catch(() => {});
 
     // Featured goal: the ACTIVE goal nearest its deadline (tie-break: most
     // complete). One goal on the dashboard, deliberately — Ricky's call:
@@ -994,6 +993,15 @@ export default function HomeScreen() {
       setFeaturedGoal(null);
     }
 
+    // Teams load alongside everything above rather than after it.
+    await teamsDone;
+  }
+
+  async function loadTeams(uId: string, memberships: any[]) {
+    const leagueList: League[] = memberships.map((m: any) => m.leagues).filter(Boolean);
+    const leagueIds: string[] = memberships.map((m: any) => m.league_id);
+    setLeagues(leagueList);
+
     // Per-league "new activity" teaser count — powers the Team Pulse card.
     // Local calendar-day boundary (midnight in the viewer's own device
     // timezone), not a rolling 24h window — a rolling window still calls
@@ -1020,24 +1028,18 @@ export default function HomeScreen() {
       const allMemberIds = [...new Set((leagueMembersData || []).map((m: any) => m.user_id as string))];
 
       // Today's activity (Momentum) and this week's Effort (Weekly Leader)
-      // both need only the member list, so they go out together rather than
-      // one after the other.
+      // come from one request: the week always contains today (weeks start
+      // on Monday), so today's activities are the tail of the week's.
       const weekStart = getMondayOfWeek(new Date());
-      const [{ data: recentActivities }, { data: weekActivities }] = await Promise.all([
-        supabase
-          .from('activities')
-          .select('user_id, started_at')
-          .in('user_id', allMemberIds)
-          .gte('started_at', startOfToday.toISOString())
-          .order('started_at', { ascending: false }),
-        allMemberIds.length > 0
-          ? supabase
-              .from('activities')
-              .select('user_id, effort_score')
-              .in('user_id', allMemberIds)
-              .gte('started_at', weekStart.toISOString())
-          : Promise.resolve({ data: [] as any[] }),
-      ]);
+      const { data: weekActivities } = allMemberIds.length > 0
+        ? await supabase
+            .from('activities')
+            .select('user_id, started_at, effort_score')
+            .in('user_id', allMemberIds)
+            .gte('started_at', weekStart.toISOString())
+            .order('started_at', { ascending: false })
+        : { data: [] as any[] };
+      const recentActivities = (weekActivities || []).filter((a: any) => new Date(a.started_at) >= startOfToday);
 
       const leagueListWithCounts = leagueList.map((l: League) => {
         const memberIds = new Set(memberIdsByLeague[l.id] || []);
@@ -1062,18 +1064,7 @@ export default function HomeScreen() {
           trainerIds.push(a.user_id);
         }
       });
-      if (trainerIds.length > 0) {
-        const { data: trainerProfiles } = await supabase
-          .from('users')
-          .select('id, display_name')
-          .in('id', trainerIds);
-        const trainerProfileById: Record<string, any> = {};
-        (trainerProfiles || []).forEach((p: any) => { trainerProfileById[p.id] = p; });
-        const names = trainerIds.map((id) => firstNameOnly(trainerProfileById[id]));
-        setMomentumTrainers({ leagueId: hotLeague.id, names, totalCount: trainerIds.length, selfTrained });
-      } else {
-        setMomentumTrainers(null);
-      }
+      // Their names come from the same profile request as the standings below.
 
       // Weekly Leader: standings for EVERY team you're in, this calendar week
       // (Monday-start, same boundary streak.ts uses) — one entry per team,
@@ -1117,14 +1108,20 @@ export default function HomeScreen() {
           ids.forEach((id) => everyRankedId.add(id));
         }
 
+        // One profile request for everyone Home names: today's trainers
+        // (Momentum) and everyone on a podium.
         const profileById: Record<string, any> = {};
-        if (everyRankedId.size > 0) {
+        const namedIds = [...new Set([...trainerIds, ...everyRankedId])];
+        if (namedIds.length > 0) {
           const { data: profiles } = await supabase
             .from('users')
             .select('id, display_name, avatar_url')
-            .in('id', Array.from(everyRankedId));
+            .in('id', namedIds);
           (profiles || []).forEach((p: any) => { profileById[p.id] = p; });
         }
+        setMomentumTrainers(trainerIds.length > 0
+          ? { leagueId: hotLeague.id, names: trainerIds.map((id) => firstNameOnly(profileById[id])), totalCount: trainerIds.length, selfTrained }
+          : null);
 
         for (const league of leagueListWithCounts) {
           const rankedIds = rankedByLeague[league.id] ?? [];
@@ -1350,32 +1347,6 @@ export default function HomeScreen() {
                 labelStyle={styles.mAddActivityLabel}
               />
 
-              {/* Recognition — one line, only when someone has reacted to one
-                  of your activities in the last three days. The detail lives
-                  on the activity itself. */}
-              {recognition && (
-                <TouchableOpacity style={styles.mRecognition} activeOpacity={0.7} onPress={() => router.push('/my-activities')}>
-                  <View style={styles.mRecognitionFaces}>
-                    {recognition.faces.map((f, i) => (
-                      <View key={f.id} style={[styles.mRecognitionFace, i > 0 && { marginLeft: -9 }]}>
-                        {f.url
-                          ? <Image source={{ uri: f.url }} style={styles.mRecognitionFaceImg} />
-                          : <Text style={styles.mRecognitionInitial}>{f.initial}</Text>}
-                      </View>
-                    ))}
-                  </View>
-                  <Text style={styles.mRecognitionText} numberOfLines={2}>
-                    <Text style={styles.mRecognitionName}>
-                      {recognition.names[0]}{recognition.others > 0 ? ` and ${recognition.others} ${recognition.others === 1 ? 'other' : 'others'}` : ''}
-                    </Text>
-                    {recognition.inspiredOnly
-                      ? ` ${recognition.others > 0 ? 'were' : 'was'} Inspired by your ${activityShortName(recognition.activityType)}`
-                      : ` gave Respect to your ${activityShortName(recognition.activityType)}`}
-                  </Text>
-                  <RivalIcon name="chevronRight" size={18} color={RivalColors.accentText} />
-                </TouchableOpacity>
-              )}
-
               {/* Today — sits with the day's actions, just under Add activity,
                   so Legacy below it is purely lifetime. */}
               <View style={[styles.mLegacyStatBox, styles.mTodayRow]}>
@@ -1463,7 +1434,7 @@ export default function HomeScreen() {
                 {featuredGoal ? (
                   <>
                     <View style={styles.mFocusHead}>
-                      <MHeading title={featuredGoal.activityLabel} subtitle="Focus" icon="target" />
+                      <MHeading title={featuredGoal.activityLabel} subtitle="Focus" />
                     </View>
                     {/* Same ring used by the Team Challenge card (team-hub.tsx) —
                         Ricky asked for this card to match it. RivalChallengeRing
@@ -1499,7 +1470,7 @@ export default function HomeScreen() {
                 ) : (
                   <>
                     <View style={styles.mFocusEmptyHead}>
-                      <MHeading title="Choose something worth chasing." subtitle="Focus" icon="target" />
+                      <MHeading title="Choose something worth chasing." subtitle="Focus" />
                     </View>
                     <TouchableOpacity onPress={() => router.push('/goals')}>
                       <Text style={styles.mFocusViewLink}>Set focus →</Text>
@@ -1520,18 +1491,55 @@ export default function HomeScreen() {
                   resizeMode="cover"
                 />
                 <View style={{ marginTop: 8 }}>
-                  <MHeading title="Legacy" subtitle="Lifetime of Effort" />
+                  <MHeading title="Legacy" subtitle={heroPage === 0 ? "Lifetime of Effort" : `${seasonYear} so far`} />
                 </View>
 
-                <View style={{ alignItems: 'center', marginTop: 26 }}>
-                  <CountUpText value={Math.round(lifetimeXp)} style={styles.mLegacyHeroNumber} />
-                  <Text style={styles.mLegacyHeroLabel}>Total Effort</Text>
-                  {legacyWeek.effort > 0 && (
-                    <View style={styles.mLegacyWeekChip}>
-                      <RivalIcon name="trendUp" size={13} color={RivalColors.accentText} />
-                      <Text style={styles.mLegacyWeekChipText}>+{legacyWeek.effort.toLocaleString()} this week</Text>
+                {/* Two figures you can swipe between: everything ever earned,
+                    and this year's — the number rank is built on. */}
+                <View style={{ marginTop: 26 }} onLayout={(e) => setHeroWidth(Math.round(e.nativeEvent.layout.width))}>
+                  <ScrollView
+                    ref={heroScrollRef}
+                    horizontal
+                    pagingEnabled
+                    showsHorizontalScrollIndicator={false}
+                    scrollEventThrottle={16}
+                    onScroll={(e) => {
+                      if (!heroWidth) return;
+                      const idx = Math.round(e.nativeEvent.contentOffset.x / heroWidth);
+                      setHeroPage((cur) => (cur === idx ? cur : idx));
+                    }}
+                  >
+                    <View style={[styles.mLegacyHeroPage, heroWidth ? { width: heroWidth } : null]}>
+                      <CountUpText value={Math.round(lifetimeXp)} style={styles.mLegacyHeroNumber} />
+                      <Text style={styles.mLegacyHeroLabel}>Total Effort</Text>
+                      {legacyWeek.effort > 0 && (
+                        <View style={styles.mLegacyWeekChip}>
+                          <RivalIcon name="trendUp" size={13} color={RivalColors.accentText} />
+                          <Text style={styles.mLegacyWeekChipText}>+{legacyWeek.effort.toLocaleString()} this week</Text>
+                        </View>
+                      )}
                     </View>
-                  )}
+                    <View style={[styles.mLegacyHeroPage, heroWidth ? { width: heroWidth } : null]}>
+                      <CountUpText value={Math.round(seasonEffortTotal)} style={styles.mLegacyHeroNumber} />
+                      <Text style={styles.mLegacyHeroLabel}>{seasonYear} Effort</Text>
+                      <TouchableOpacity style={styles.mLegacyWeekChip} onPress={() => router.push('/ranks')} activeOpacity={0.8}>
+                        <RivalIcon name="doubleChevronUp" size={13} color={RivalColors.accentText} />
+                        <Text style={styles.mLegacyWeekChipText}>{rankName ? `${rankName} · ` : ''}{seasonDaysLeft} days left</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </ScrollView>
+                  <View style={[styles.mLeaderDots, { marginTop: 14 }]}>
+                    {[0, 1].map((i) => (
+                      <TouchableOpacity
+                        key={i}
+                        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                        accessibilityLabel={i === 0 ? 'Show lifetime Effort' : `Show ${seasonYear} Effort`}
+                        onPress={() => { setHeroPage(i); heroScrollRef.current?.scrollTo({ x: i * heroWidth, animated: true }); }}
+                      >
+                        <View style={[styles.mLeaderDot, i === heroPage && styles.mLeaderDotActive]} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 </View>
 
                 {(() => {
@@ -1596,16 +1604,25 @@ export default function HomeScreen() {
                       <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
                         <RivalIcon name="respect" size={16} color={RivalColors.accentFill} />
                         <Text style={styles.mLegacyStatValue}>{impact.respect.toLocaleString()}</Text>
+                        {impactWeek.respect > 0
+                          ? <Text style={styles.mLegacyStatGain}>{`+${impactWeek.respect} this week`}</Text>
+                          : <Text style={styles.mLegacyStatQuiet}>received</Text>}
                         <Text style={styles.mLegacyStatLabel}>Respect</Text>
                       </View>
                       <View style={[styles.mLegacyStatCell, styles.mLegacyStatCellBorder]}>
                         <RivalIcon name="impact" size={16} color={RivalColors.accentFill} />
                         <Text style={styles.mLegacyStatValue}>{impact.inspired.toLocaleString()}</Text>
+                        {impactWeek.inspired > 0
+                          ? <Text style={styles.mLegacyStatGain}>{`+${impactWeek.inspired} this week`}</Text>
+                          : <Text style={styles.mLegacyStatQuiet}>by your training</Text>}
                         <Text style={styles.mLegacyStatLabel}>Inspired</Text>
                       </View>
                       <View style={styles.mLegacyStatCell}>
                         <RivalIcon name="groups" size={16} color={RivalColors.accentFill} />
                         <Text style={styles.mLegacyStatValue}>{impact.people.toLocaleString()}</Text>
+                        {impactWeek.people > 0
+                          ? <Text style={styles.mLegacyStatGain}>{`+${impactWeek.people} this week`}</Text>
+                          : <Text style={styles.mLegacyStatQuiet}>recognised you</Text>}
                         <Text style={styles.mLegacyStatLabel}>People</Text>
                       </View>
                     </View>
@@ -2786,20 +2803,11 @@ const styles = StyleSheet.create({
   mYearTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
   mYearFill: { height: 6, borderRadius: 3, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient } as any,
   mYearNote: { fontFamily: RivalFontFamily, fontSize: 12.5, lineHeight: 18, color: 'rgba(255,255,255,0.55)', textAlign: 'center' },
-  mRecognition: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 14, paddingHorizontal: 4 },
-  mRecognitionFaces: { flexDirection: 'row' },
-  mRecognitionFace: {
-    width: 30, height: 30, borderRadius: 15, overflow: 'hidden', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#3a2a22', borderWidth: 2, borderColor: '#110e0c',
-  },
-  mRecognitionFaceImg: { width: 30, height: 30 },
-  mRecognitionInitial: { fontFamily: RivalFontFamily, fontSize: 12, fontWeight: '800', color: RivalColors.accentText },
-  mRecognitionText: { flex: 1, fontFamily: RivalFontFamily, fontSize: 13.5, lineHeight: 19, color: 'rgba(255,255,255,0.7)' },
-  mRecognitionName: { fontWeight: '700', color: '#fff' },
   mLegacyCarouselBox: { flexDirection: 'column', paddingVertical: 0, overflow: 'hidden' },
   mLegacyPage: { flexDirection: 'row', paddingVertical: 20 },
   mTodayRow: { marginTop: 14, marginHorizontal: -8, backgroundColor: '#1d1714', borderColor: 'rgba(255,209,190,0.10)' },
   mLegacyStatValueSerifSm: { fontSize: 14.5, letterSpacing: -0.2 },
+  mLegacyStatQuiet: { fontFamily: RivalFontFamily, fontSize: 11, fontWeight: '600', color: 'rgba(255,255,255,0.4)', marginTop: 2 },
   mLegacyStatGain: { fontFamily: RivalFontFamily, fontSize: 11, fontWeight: '600', color: RivalColors.accentText, marginTop: 2 },
   mLegacyWeekChip: {
     flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 12,
@@ -2814,6 +2822,7 @@ const styles = StyleSheet.create({
   mMilestoneTitle: { fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 18, fontWeight: '700', lineHeight: 24, color: '#fff', marginTop: 4, marginBottom: 10 },
   mMilestoneTrack: { height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.08)', overflow: 'hidden' },
   mMilestoneFill: { height: 6, borderRadius: 3, backgroundColor: RivalButtonColors.fill, ...RivalButtonColors.gradient } as any,
+  mLegacyHeroPage: { alignItems: 'center' },
   mLegacyHeroNumber: {
     fontFamily: RivalSerifFamily, fontStyle: 'italic', fontSize: 46, fontWeight: '700', color: RivalColors.accentFill,
     ...(Platform.OS === 'web' ? {
@@ -2838,6 +2847,7 @@ const styles = StyleSheet.create({
   // mPodiumGrid's 221 (31 of which is its paddingTop) plus the meta capsule's
   // 19 marginTop + 5/8 padding + ~32 of two text lines.
   mLeaderEmpty: { flex: 1, minHeight: 285, alignItems: 'center', justifyContent: 'flex-end', gap: 0, paddingBottom: 8 },
+  mLeaderFindTeam: { alignSelf: 'center', paddingHorizontal: 28, marginTop: 14 },
   mGhostPodium: { flexDirection: 'row', alignItems: 'flex-end', gap: 12, marginTop: 56 },
   mGhostPillar: {
     width: 72, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 10,

@@ -94,7 +94,7 @@ export default function StravaCallbackScreen() {
             seconds={reveal.seconds}
             effort={reveal.effort}
             activities={reveal.activities}
-            ctaLabel="Let's Go!"
+            ctaLabel="Continue"
             onDone={() => window.close()}
           />
         ) : (

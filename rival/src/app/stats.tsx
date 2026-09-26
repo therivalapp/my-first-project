@@ -105,6 +105,31 @@ export default function StatsScreen() {
 
     setEarnedMilestones((milestonesData || []).map((m: any) => m.type));
 
+    const now = new Date();
+    const day = now.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() + diff);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekTotal = activities
+      .filter((a) => new Date(a.started_at) >= weekStart)
+      .reduce((sum, a) => sum + (a.effort_score || 0), 0);
+    setThisWeekPoints(Math.round(weekTotal * 10) / 10);
+
+    setStreak(calculateStreak(activities));
+
+    setPastSeasons(
+      (seasonResultsData || []).map((r: any) => ({
+        year: r.seasons?.year,
+        final_xp: r.final_xp,
+        final_rank_name: r.final_rank_name,
+      }))
+    );
+
+    // Everything above is ready; Impact (reactions from other people) fills in
+    // a moment later rather than holding the page behind the loading state.
+    setLoading(false);
+
     // Activity ids come from the full fetch above — no second query, and no
     // 1000-row cap undercounting Impact for heavy importers.
     const myActivityIds = activities.map((a: any) => a.id);
@@ -133,28 +158,6 @@ export default function StatsScreen() {
     setInspiredTimes(inspired);
     setRespectTimes(respect);
 
-    const now = new Date();
-    const day = now.getDay();
-    const diff = day === 0 ? -6 : 1 - day;
-    const weekStart = new Date(now);
-    weekStart.setDate(now.getDate() + diff);
-    weekStart.setHours(0, 0, 0, 0);
-    const weekTotal = activities
-      .filter((a) => new Date(a.started_at) >= weekStart)
-      .reduce((sum, a) => sum + (a.effort_score || 0), 0);
-    setThisWeekPoints(Math.round(weekTotal * 10) / 10);
-
-    setStreak(calculateStreak(activities));
-
-    setPastSeasons(
-      (seasonResultsData || []).map((r: any) => ({
-        year: r.seasons?.year,
-        final_xp: r.final_xp,
-        final_rank_name: r.final_rank_name,
-      }))
-    );
-
-    setLoading(false);
   }
 
   if (loading) {
@@ -229,7 +232,7 @@ export default function StatsScreen() {
             <Text style={[styles.levelPillText, { color: rankColor }]}>Level {lvl.level} · {Math.round(seasonPoints)} Effort</Text>
           </View>
           <Text style={styles.seasonLabel}>
-            {seasonYear} Season{seasonDaysLeft > 0 ? ` · ${seasonDaysLeft}d left` : ''}
+            {seasonYear}{seasonDaysLeft > 0 ? ` · ${seasonDaysLeft} days left` : ''}
           </Text>
           {!isMax && (
             <View style={styles.xpSection}>

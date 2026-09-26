@@ -10,7 +10,7 @@ export { RivalIcon, activityIconName } from './RivalIcon';
 export { RivalBackButton } from './RivalBackButton';
 export { RivalCalendarGrid } from './RivalCalendarGrid';
 export { RivalDateField } from './RivalDateField';
-export { RivalTopNav } from './RivalTopNav';
+export { RivalTopNav, invalidateNavIdentity } from './RivalTopNav';
 export { RivalPageHeader } from './RivalPageHeader';
 export { RivalAlertHost } from './RivalAlertHost';
 export { StravaImportReveal } from './StravaImportReveal';

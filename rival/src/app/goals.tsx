@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { StyleSheet, TouchableOpacity, View, Text, ScrollView, TextInput, Modal, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
+import { fetchAllActivities } from '../lib/fetchAllActivities';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { displayToIsoDate, isoToDisplayDate } from '../lib/dateFormat';
 import { computeGoalProgress } from '../lib/goalProgress';
@@ -93,13 +94,12 @@ function getNiceInterval(target: number): number {
 }
 
 const ZERO_MESSAGES = [
-  "Let's do this! Time to get moving.",
-  "You got this. First one's always the hardest.",
-  "Goal set. Now go earn it.",
-  "Ready when you are. Let's get it.",
-  "Today's the day. No better time than now.",
+  "Goal set. The first activity is the start.",
+  "Every activity from here counts toward it.",
+  "Progress begins with the first step.",
+  "Ready when you are.",
+  "Today is a good day to begin.",
   "Your future self will thank you.",
-  "Go get those endorphins!",
 ];
 
 // A week/month goal whose end_date has passed without being hit — the DB row
@@ -243,18 +243,19 @@ export default function GoalsScreen() {
     if (!user) return;
     setUserId(user.id);
 
-    const { data: goalsData } = await supabase
-      .from('goals')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
+    // Together rather than one after the other. The full history, paged: a
+    // plain select stops at 1,000 rows, which would under-count a goal for
+    // anyone with a long imported history.
+    const [{ data: goalsData }, activities] = await Promise.all([
+      supabase
+        .from('goals')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false }),
+      fetchAllActivities(user.id, 'activity_type, distance_meters, elevation_meters, started_at'),
+    ]);
 
     if (!goalsData) { setLoading(false); return; }
-
-    const { data: activities } = await supabase
-      .from('activities')
-      .select('activity_type, distance_meters, elevation_meters, started_at')
-      .eq('user_id', user.id);
 
     const goalsWithProgress = goalsData.map((goal: any) => ({
       ...goal,
@@ -646,7 +647,7 @@ export default function GoalsScreen() {
 
                 {done ? (
                   <View style={ms.doneBlock}>
-                    <Text style={[rm.label, { color: RivalColors.accentGold }]}>Goal complete!</Text>
+                    <Text style={[rm.label, { color: RivalColors.accentGold }]}>Goal complete</Text>
                     <Text style={ms.message}>You crushed it! Set new goal to keep the momentum going.</Text>
                   </View>
                 ) : ended ? (
@@ -750,7 +751,7 @@ export default function GoalsScreen() {
 
               {done && (
                 <View style={styles.celebrationBanner}>
-                  <Text style={styles.celebrationText}>Goal complete!</Text>
+                  <Text style={styles.celebrationText}>Goal complete</Text>
                   <Text style={styles.celebrationSub}>You crushed it! Set new goal to keep the momentum going.</Text>
                 </View>
               )}

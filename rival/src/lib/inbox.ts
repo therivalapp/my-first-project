@@ -53,6 +53,7 @@ export function onInboxChanged(listener: InboxListener): () => void {
 }
 
 function inboxChanged() {
+  badgeCache = null;
   listeners.forEach((l) => { try { l(); } catch { /* a bad listener must not break the action */ } });
 }
 
@@ -72,15 +73,23 @@ export async function fetchInbox(limit = 50): Promise<InboxItem[]> {
 // Drives the bell's badge. Counts unread, plus anything still waiting for an
 // answer — an unanswered question you have already glanced at is still
 // outstanding, and the badge should say so.
+// The bar asks on every screen change; a few seconds of reuse stops a burst
+// of navigation re-counting a number that hasn't moved. Anything that changes
+// the count clears it through inboxChanged().
+const BADGE_CACHE_MS = 15_000;
+let badgeCache: { at: number; userId: string; count: number } | null = null;
+
 export async function fetchInboxBadgeCount(): Promise<number> {
   const { data: { user } } = await getAuthUser();
   if (!user) return 0;
+  if (badgeCache && badgeCache.userId === user.id && Date.now() - badgeCache.at < BADGE_CACHE_MS) return badgeCache.count;
   const { count, error } = await supabase
     .from('inbox_items')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', user.id)
     .or(`read_at.is.null,and(kind.in.(${ACTIONABLE.join(',')}),resolved_at.is.null)`);
   if (error) return 0;
+  badgeCache = { at: Date.now(), userId: user.id, count: count ?? 0 };
   return count ?? 0;
 }
 

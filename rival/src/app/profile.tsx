@@ -7,7 +7,7 @@ import { supabase, getAuthUser } from '../lib/supabase';
 import { notify } from '../lib/notify';
 import { connectStrava, runFullStravaImport } from '../lib/strava';
 import { getQuote, QuoteTone } from '../lib/quotes';
-import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav, StravaImportReveal, RivalBackButton} from '../components/rival';
+import { RivalButton, RivalCard, RivalIcon, RivalIconName, RivalTopNav, StravaImportReveal, RivalBackButton, invalidateNavIdentity } from '../components/rival';
 import { RivalColors, RivalRadius, RivalType, RivalButtonColors } from '../constants/rivalTheme';
 import { BREAKPOINT_WIDE_LAYOUT } from '../constants/breakpoints';
 
@@ -147,6 +147,7 @@ export default function ProfileScreen() {
       return;
     }
     await supabase.auth.updateUser({ data: { display_name: newName.trim() } });
+    invalidateNavIdentity();
     setDisplayName(newName.trim());
     setEditingName(false);
     setSaving(false);
@@ -202,6 +203,7 @@ export default function ProfileScreen() {
           // half fails the photo is orphaned in storage and the profile keeps
           // the old avatar, so say so rather than showing the new one.
           const { error: rowErr } = await supabase.from('users').update({ avatar_url: urlData.publicUrl }).eq('id', user.id);
+          invalidateNavIdentity();
           if (rowErr) {
             notify("Couldn't update photo", rowErr.message);
           } else {
@@ -337,6 +339,7 @@ export default function ProfileScreen() {
   }
 
   async function handleSignOut() {
+    invalidateNavIdentity();
     await supabase.auth.signOut();
     router.replace('/');
   }
@@ -373,7 +376,8 @@ export default function ProfileScreen() {
         notify("Couldn't delete account", data.error || 'Try again or contact support.');
         return;
       }
-      await supabase.auth.signOut();
+      invalidateNavIdentity();
+    await supabase.auth.signOut();
       router.replace('/');
     } catch {
       notify("Couldn't delete account", 'Could not reach the server. Try again.');
@@ -666,6 +670,17 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         );
       })}
+      {/* Not a panel — the introduction is its own page. */}
+      <TouchableOpacity style={styles.sidebarBtn} onPress={() => router.push('/getting-started')}>
+        <RivalIcon name="flag" size={16} color={RivalColors.textSecondary} />
+        <Text style={styles.sidebarLabel}>How RIVAL works</Text>
+        {!wide && (
+          <>
+            <View style={{ flex: 1 }} />
+            <RivalIcon name="chevronRight" size={18} color={RivalColors.textSecondary} />
+          </>
+        )}
+      </TouchableOpacity>
     </View>
   );
 

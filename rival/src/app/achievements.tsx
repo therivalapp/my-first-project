@@ -85,7 +85,7 @@ export default function AchievementsScreen() {
 
           {newlyEarned.length > 0 && (
             <View style={[rm.card, ms.newCard]}>
-              <Text style={[rm.label, { color: RivalColors.accentGold }]}>New unlocks!</Text>
+              <Text style={[rm.label, { color: RivalColors.accentGold }]}>New unlocks</Text>
               <Text style={ms.newNames}>{newlyEarned.map((id) => ACHIEVEMENTS.find((a) => a.id === id)?.name).join(', ')}</Text>
             </View>
           )}
@@ -141,7 +141,7 @@ export default function AchievementsScreen() {
 
         {newlyEarned.length > 0 && (
           <View style={styles.newBanner}>
-            <Text style={styles.newBannerTitle}>New unlocks!</Text>
+            <Text style={styles.newBannerTitle}>New unlocks</Text>
             <Text style={styles.newBannerSub}>
               {newlyEarned.map((id) => ACHIEVEMENTS.find((a) => a.id === id)?.name).join(', ')}
             </Text>

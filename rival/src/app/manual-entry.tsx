@@ -8,7 +8,7 @@ import { isoToDisplayDate, displayToIsoDate } from '../lib/dateFormat';
 import { findMatchingRaceId } from '../lib/raceMatch';
 import { formatDuration } from '../lib/format';
 import { confirmAction } from '../lib/notify';
-import { CANONICAL_LIFTS, matchCanonicalLift } from './scan-workout';
+import { CANONICAL_LIFTS, matchCanonicalLift } from '../lib/lifts';
 import { RivalButton, RivalCard, RivalIcon, activityIconName, RivalBackButton, RivalDateField } from '../components/rival';
 import { MediaPicker, pickMediaFiles, MAX_MEDIA, MAX_VIDEOS, MAX_VIDEO_SECONDS, type MediaItem } from '../components/rival/MediaPicker';
 import { MEDIA_COLUMNS, existingAsItems, saveArrangement, type MediaRow } from '../lib/activityMedia';
@@ -451,7 +451,7 @@ export default function ManualEntryScreen() {
           placeholder="Morning Tempo Run"
           placeholderTextColor={RivalColors.textSecondary}
         />
-        {fieldError?.field === 'name' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
+        {fieldError?.field === 'name' && <Text style={styles.fieldError}>{fieldError.message}</Text>}
       </View>
       <View style={styles.field}>
         <Text style={styles.fieldLabel}>DATE</Text>
@@ -460,7 +460,7 @@ export default function ManualEntryScreen() {
           onChangeText={(v) => { setDateStr(v); if (fieldError?.field === 'date') setFieldError(null); }}
           inputStyle={styles.input}
         />
-        {fieldError?.field === 'date' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
+        {fieldError?.field === 'date' && <Text style={styles.fieldError}>{fieldError.message}</Text>}
       </View>
     </RivalCard>
   );
@@ -529,7 +529,7 @@ export default function ManualEntryScreen() {
         {metric('DISTANCE', 'KM', distanceKm, setDistanceKm, '0.00', 'decimal-pad')}
         {metric('ELEVATION', 'M', elevationM, setElevationM, '0')}
       </View>
-      {fieldError?.field === 'duration' && <Text style={styles.fieldError}>⚠️ {fieldError.message}</Text>}
+      {fieldError?.field === 'duration' && <Text style={styles.fieldError}>{fieldError.message}</Text>}
       {durationSeconds > 0 && (
         <Text style={styles.effortPreview}>
           ≈ {Math.round(calculateEffortScorePreview(workoutType, durationSeconds, elevationM, scoringConfig))} Effort · {formatDuration(durationSeconds)}
@@ -538,7 +538,7 @@ export default function ManualEntryScreen() {
       {CLASS_BASED_TYPES.has(workoutType) && durationSeconds >= CLASS_DURATION_FLOOR_SECONDS && durationMin.trim() !== '' && Number(durationMin) * 60 < 30 * 60 && (
         <Text style={styles.classHint}>CrossFit, Hyrox, Bootcamp and HIIT activities count as a full 45-minute class, including warm-up and skill work.</Text>
       )}
-      {generalError && <Text style={styles.fieldError}>⚠️ {generalError}</Text>}
+      {generalError && <Text style={styles.fieldError}>{generalError}</Text>}
       <RivalButton
         label={saving ? 'Saving…' : isEditMode ? 'Save Changes' : 'Save activity'}
         onPress={saveSession}
@@ -677,7 +677,7 @@ export default function ManualEntryScreen() {
             : `Up to ${MAX_MEDIA} photos and videos · 1 video, up to ${MAX_VIDEO_SECONDS / 60} min`}
         </Text>
       </TouchableOpacity>
-      {mediaError && <Text style={styles.fieldError}>⚠️ {mediaError}</Text>}
+      {mediaError && <Text style={styles.fieldError}>{mediaError}</Text>}
     </RivalCard>
   );
 

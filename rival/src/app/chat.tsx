@@ -211,11 +211,15 @@ export default function ChatScreen() {
       .from('league_messages')
       .select('id, user_id, kind, body, activity_type, scheduled_at, location, created_at')
       .eq('league_id', id)
-      .order('created_at', { ascending: true })
-      .limit(200);
+      // The NEWEST messages, shown oldest-first. Ascending with a limit
+      // returned the first 200 ever sent, so once a team passed 200 messages
+      // nothing new appeared. 100 also keeps the reactions lookup below (every
+      // id goes into its web address) comfortably short.
+      .order('created_at', { ascending: false })
+      .limit(100);
 
     if (loadError) { setError(loadError.message); return []; }
-    const rows = (data ?? []) as Msg[];
+    const rows = ((data ?? []) as Msg[]).reverse();
     setMessages(rows);
 
     // Reactions, seen-by and RSVPs each depend only on the messages, so the

@@ -11,7 +11,7 @@ import { confirmAction, notify } from '../lib/notify';
 import { formatDisplayName, formatTeamName, formatRaceName } from '../lib/identity';
 import { formatDuration } from '../lib/format';
 import { computeActivityInsight, ActivityInsight, InsightActivity, InsightTone } from '../lib/activityInsights';
-import { matchCanonicalLift } from './scan-workout';
+import { matchCanonicalLift } from '../lib/lifts';
 import { RivalTopNav, RivalIcon, RivalIconName, activityIconName, TrainingPartners } from '../components/rival';
 import { withinTagWindow } from '../lib/tagWindow';
 import { RivalColors, RivalSerifFamily, RivalButtonColors } from '../constants/rivalTheme';
@@ -359,7 +359,9 @@ export default function TeamFeedScreen() {
   }, []);
 
   const loadFeed = useCallback(async () => {
-    setLoading(true);
+    // Coming back to the tab keeps the feed on screen and refreshes it behind
+    // the scenes; only a first visit shows the loading state.
+    if (!ctxRef.current) setLoading(true);
     const { data: { user } } = await getAuthUser();
     if (!user) { setLoading(false); return; }
     setCurrentUserId(user.id);

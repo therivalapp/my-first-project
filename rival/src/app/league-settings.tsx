@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import { supabase, getAuthUser } from '../lib/supabase';
 import { formatDisplayName, formatTeamName } from '../lib/identity';
+import { copyText } from '../lib/clipboard';
 
 // A crest (and the name baked into it) can change once every 6 months —
 // often enough to fix a bad first attempt or reflect a real team change,
@@ -67,6 +68,20 @@ export default function LeagueSettingsScreen() {
   const [isPrivate, setIsPrivate] = useState(true);
   const [pendingRequests, setPendingRequests] = useState<Member[]>([]);
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
+  const [description, setDescription] = useState('');
+  const [descDraft, setDescDraft] = useState('');
+  const [savingDesc, setSavingDesc] = useState(false);
+  const [descSaved, setDescSaved] = useState(false);
+  // False until team_settings.sql has added the column.
+  const [hasDescription, setHasDescription] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
+  const [codeNote, setCodeNote] = useState('');
+  const [resettingCode, setResettingCode] = useState(false);
+  // Deleting asks for the team name to be typed, not just a tap: it removes
+  // every member's shared chat, posts and challenge history for good.
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTyped, setDeleteTyped] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     load();
@@ -93,7 +108,8 @@ export default function LeagueSettingsScreen() {
 
     const { data: league } = await supabase
       .from('leagues')
-      .select('name, created_by, logo_url, is_private, crest_generated_at')
+      // select('*'): works before and after team_settings.sql adds description.
+      .select('*')
       .eq('id', id)
       .single();
 
@@ -104,6 +120,10 @@ export default function LeagueSettingsScreen() {
       setLogoUrl(league.logo_url || null);
       setIsPrivate(league.is_private !== false);
       setCrestGeneratedAt(league.crest_generated_at || null);
+      setHasDescription('description' in league);
+      setDescription(league.description ?? '');
+      setDescDraft(league.description ?? '');
+      setInviteCode(league.invite_code ?? '');
     }
 
     const { data: membersData } = await supabase
@@ -236,6 +256,98 @@ export default function LeagueSettingsScreen() {
     );
   }
 
+  async function saveDescription() {
+    const next = descDraft.trim();
+    setSavingDesc(true);
+    const { data, error } = await supabase.from('leagues').update({ description: next || null }).eq('id', id).select('id');
+    setSavingDesc(false);
+    if (error || !data?.length) { notify("Couldn't save the description", error?.message ?? 'Only team admins can do this.'); return; }
+    setDescription(next);
+    setDescDraft(next);
+    setDescSaved(true);
+    setTimeout(() => setDescSaved(false), 1800);
+  }
+
+  function inviteLink() {
+    const origin = Platform.OS === 'web' && typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/join-league?code=${inviteCode}`;
+  }
+
+  async function copyCode() {
+    if (await copyText(inviteCode)) { setCodeNote('Code copied'); setTimeout(() => setCodeNote(''), 1800); }
+  }
+
+  async function shareInvite() {
+    const text = `Join ${formatTeamName(leagueName)} on RIVAL. Invite code: ${inviteCode}`;
+    const url = inviteLink();
+    const nav: any = Platform.OS === 'web' && typeof navigator !== 'undefined' ? navigator : null;
+    if (nav?.share) {
+      try { await nav.share({ title: formatTeamName(leagueName), text, url }); } catch { /* closed the share sheet */ }
+      return;
+    }
+    if (await copyText(`${text}\n${url}`)) { setCodeNote('Invite link copied'); setTimeout(() => setCodeNote(''), 1800); }
+  }
+
+  async function resetCode() {
+    const ok = await confirmAction({
+      title: 'Reset the invite code?',
+      message: 'The current code stops working straight away. Members already in the team are not affected.',
+      confirmLabel: 'Reset code',
+      destructive: true,
+    });
+    if (!ok) return;
+    setResettingCode(true);
+    const { data, error } = await supabase.rpc('reset_league_invite_code', { p_league_id: id });
+    setResettingCode(false);
+    if (error || !data) { notify("Couldn't reset the code", error?.message ?? 'Try again.'); return; }
+    setInviteCode(data as string);
+    setCodeNote('New code created');
+    setTimeout(() => setCodeNote(''), 2200);
+  }
+
+  async function makeFounder(userId: string) {
+    const member = members.find((m) => m.user_id === userId);
+    const name = member?.users ? formatDisplayName(member.users, 'this member') : 'this member';
+    const ok = await confirmAction({
+      title: `Hand the team to ${name}?`,
+      message: `${name} becomes the founder, with the final say over the team, including deleting it. You stay on as an admin.`,
+      confirmLabel: 'Hand over',
+      destructive: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.rpc('transfer_league_founder', { p_league_id: id, p_new_founder: userId });
+    if (error) { notify("Couldn't hand over the team", error.message); return; }
+    setCreatedBy(userId);
+    setMembers((prev) => prev.map((m) => (m.user_id === userId ? { ...m, role: 'admin' } : m)));
+  }
+
+  async function leaveTeam() {
+    const founder = createdBy === currentUserId;
+    const last = members.length <= 1;
+    const ok = await confirmAction({
+      title: `Leave ${formatTeamName(leagueName)}?`,
+      message: last
+        ? "You're the last member. Leaving will permanently delete the team, including its chat, posts and challenge history."
+        : founder
+          ? 'You are the founder. The team passes to the longest-standing admin, or the longest-standing member if there are no other admins. To choose who, use Make founder on a member first.'
+          : 'You can rejoin later with the invite code.',
+      confirmLabel: last ? 'Leave and delete' : 'Leave team',
+      destructive: true,
+    });
+    if (!ok) return;
+    const { error } = await supabase.rpc('leave_league', { p_league_id: id });
+    if (error) { notify("Couldn't leave the team", error.message); return; }
+    router.replace('/team-feed');
+  }
+
+  async function deleteTeam() {
+    setDeleting(true);
+    const { error } = await supabase.rpc('delete_league', { p_league_id: id });
+    setDeleting(false);
+    if (error) { notify("Couldn't delete the team", error.message); return; }
+    router.replace('/team-feed');
+  }
+
   function getDisplayName(member: Member) {
     return formatDisplayName(member.users);
   }
@@ -314,6 +426,15 @@ export default function LeagueSettingsScreen() {
                 <RivalIcon name="person" size={16} color={RivalColors.onSurface} />
                 <Text style={ms.menuText}>{member.role === 'admin' ? 'Remove as admin' : 'Make admin'}</Text>
               </TouchableOpacity>
+              {createdBy === currentUserId ? (
+                <TouchableOpacity
+                  style={ms.menuItem}
+                  onPress={() => { setOpenMemberId(null); makeFounder(member.user_id); }}
+                >
+                  <RivalIcon name="crown" size={16} color={RivalColors.onSurface} />
+                  <Text style={ms.menuText}>Make founder</Text>
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity
                 style={ms.menuItem}
                 onPress={() => { setOpenMemberId(null); kickMember(member.user_id); }}
@@ -418,6 +539,48 @@ export default function LeagueSettingsScreen() {
             {crestError ? <Text style={ms.error}>{crestError}</Text> : null}
           </View>
 
+          {hasDescription ? <View style={ms.card}>
+            <Text style={ms.cardLabel}>About the team</Text>
+            <TextInput
+              style={ms.descInput}
+              value={descDraft}
+              onChangeText={setDescDraft}
+              placeholder="For example: Tuesday and Saturday runs, all paces welcome."
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              multiline
+              maxLength={160}
+            />
+            <View style={ms.descFoot}>
+              <Text style={ms.cardHint}>{descDraft.length}/160 · Shown on the team page and in team search.</Text>
+              {descDraft.trim() !== description ? (
+                <TouchableOpacity style={ms.fillBtn} onPress={saveDescription} disabled={savingDesc}>
+                  <Text style={ms.fillBtnText}>{savingDesc ? 'Saving…' : 'Save'}</Text>
+                </TouchableOpacity>
+              ) : descSaved ? <Text style={ms.savedText}>Saved</Text> : null}
+            </View>
+          </View> : null}
+
+          {inviteCode ? (
+            <View style={ms.card}>
+              <Text style={ms.cardLabel}>Invite</Text>
+              <View style={ms.codeRow}>
+                <Text style={ms.code} selectable>{inviteCode}</Text>
+                <TouchableOpacity style={ms.ghostBtn} onPress={copyCode}>
+                  <Text style={ms.ghostBtnText}>Copy</Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity style={[ms.fillBtn, ms.wideBtn]} onPress={shareInvite}>
+                <Text style={ms.fillBtnText}>Share invite link</Text>
+              </TouchableOpacity>
+              <View style={ms.descFoot}>
+                <Text style={ms.cardHint}>{codeNote || 'Anyone with the code or link can join.'}</Text>
+                <TouchableOpacity onPress={resetCode} disabled={resettingCode} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <Text style={ms.resetLink}>{resettingCode ? 'Resetting…' : 'Reset code'}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
+
           {/* Visibility as a two-way choice, both options visible, instead of
               a button whose label was the opposite of the current state. */}
           <View style={ms.card}>
@@ -472,6 +635,64 @@ export default function LeagueSettingsScreen() {
             </View>
             {members.map((mbr) => memberRow(mbr, false))}
           </View>
+
+          {/* Kept apart at the bottom, away from everyday settings. */}
+          <View style={[ms.card, ms.dangerCard]}>
+            <Text style={[ms.cardLabel, ms.dangerLabel]}>Leave or delete</Text>
+            <TouchableOpacity style={ms.dangerRow} onPress={leaveTeam}>
+              <RivalIcon name="logout" size={17} color="#ff8f8f" />
+              <View style={{ flex: 1 }}>
+                <Text style={ms.dangerText}>Leave team</Text>
+                <Text style={ms.cardHint}>
+                  {createdBy === currentUserId && members.length > 1
+                    ? 'As founder, hand the team to someone first, or it passes to the longest-standing admin.'
+                    : 'You can rejoin later with the invite code.'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+            {createdBy === currentUserId ? (
+              <>
+                <View style={ms.dangerDivider} />
+                {!deleteOpen ? (
+                  <TouchableOpacity style={ms.dangerRow} onPress={() => setDeleteOpen(true)}>
+                    <RivalIcon name="delete" size={17} color="#ff8f8f" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={ms.dangerText}>Delete team</Text>
+                      <Text style={ms.cardHint}>Removes the team for everyone, with its chat, posts and challenges. Activities and Effort are kept.</Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={{ gap: 10 }}>
+                    <Text style={ms.cardHint}>
+                      This can't be undone. Type <Text style={{ color: '#fff', fontWeight: '700' }}>{formatTeamName(leagueName)}</Text> to confirm.
+                    </Text>
+                    <TextInput
+                      style={ms.nameInput}
+                      value={deleteTyped}
+                      onChangeText={setDeleteTyped}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      placeholder="Team name"
+                      placeholderTextColor="rgba(255,255,255,0.3)"
+                    />
+                    <View style={ms.nameEditActions}>
+                      <TouchableOpacity style={ms.ghostBtn} onPress={() => { setDeleteOpen(false); setDeleteTyped(''); }}>
+                        <Text style={ms.ghostBtnText}>Cancel</Text>
+                      </TouchableOpacity>
+                      {(() => {
+                        const match = deleteTyped.trim().toLowerCase() === formatTeamName(leagueName).trim().toLowerCase();
+                        return (
+                          <TouchableOpacity style={[ms.deleteBtn, (!match || deleting) && ms.crestBtnOff]} disabled={!match || deleting} onPress={deleteTeam}>
+                            <Text style={ms.deleteBtnText}>{deleting ? 'Deleting…' : 'Delete team'}</Text>
+                          </TouchableOpacity>
+                        );
+                      })()}
+                    </View>
+                  </View>
+                )}
+              </>
+            ) : null}
+          </View>
         </ScrollView>
       </SafeAreaView>
     );
@@ -516,7 +737,7 @@ export default function LeagueSettingsScreen() {
                 <Image source={{ uri: logoUrl }} style={styles.logoImage} />
               ) : (
                 <View style={styles.logoPlaceholder}>
-                  <Text style={styles.logoPlaceholderIcon}>🏟️</Text>
+                  <RivalIcon name="groups" size={36} color={RivalColors.textSecondary} />
                   <Text style={styles.logoPlaceholderHint}>No crest yet</Text>
                 </View>
               )}
@@ -532,7 +753,7 @@ export default function LeagueSettingsScreen() {
                   ? 'Generating…'
                   : cooldownActive
                     ? `Next crest available ${nextCrestEligibleAt(crestGeneratedAt!).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
-                    : crestGeneratedAt ? '✨ Regenerate AI Crest' : '✨ Generate AI Crest'}
+                    : crestGeneratedAt ? 'Regenerate AI crest' : 'Generate AI crest'}
               </Text>
             </TouchableOpacity>
           </>
@@ -567,7 +788,7 @@ export default function LeagueSettingsScreen() {
           ) : (
             <TouchableOpacity style={styles.nameRow} onPress={() => setEditingName(true)}>
               <Text style={styles.nameText}>{formatTeamName(leagueName)}</Text>
-              <Text style={styles.editHint}>✏️ Edit</Text>
+              <Text style={styles.editHint}>Edit</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -868,6 +1089,24 @@ const styles = StyleSheet.create({
 // Mobile styles — the warm palette the rest of the mobile app now uses.
 const WARM = '#1d1714';
 const ms = StyleSheet.create({
+  descInput: {
+    minHeight: 64, backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 12,
+    color: '#fff', fontSize: 14.5, lineHeight: 20, textAlignVertical: 'top',
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
+  },
+  descFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  savedText: { fontSize: 12.5, fontWeight: '700', color: RivalColors.accentText },
+  codeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  code: { fontSize: 26, fontWeight: '800', letterSpacing: 5, color: '#fff' },
+  wideBtn: { paddingVertical: 12 },
+  resetLink: { fontSize: 12.5, fontWeight: '700', color: 'rgba(255,255,255,0.55)', textDecorationLine: 'underline' },
+  dangerCard: { borderColor: 'rgba(255,143,143,0.18)' },
+  dangerLabel: { color: '#ff8f8f' },
+  dangerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  dangerText: { fontSize: 15, fontWeight: '700', color: '#ff8f8f', marginBottom: 2 },
+  dangerDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.06)' },
+  deleteBtn: { paddingVertical: 9, paddingHorizontal: 16, borderRadius: 999, backgroundColor: '#b54848', alignItems: 'center' },
+  deleteBtnText: { fontSize: 14, fontWeight: '800', color: '#fff' },
   page: { flex: 1, backgroundColor: '#110e0c' },
   content: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 48, gap: 14 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },

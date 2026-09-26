@@ -21,6 +21,7 @@ export default function SignUpScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   async function handleSignUp() {
     if (!firstName.trim() || !lastName.trim() || !dob.trim() || !email || !password) {
@@ -60,7 +61,16 @@ export default function SignUpScreen() {
       await supabase.from('users').update({ date_of_birth: dobIso }).eq('id', data.user.id);
     }
 
-    router.replace('/home');
+    // With email confirmation switched on there is no session yet, and every
+    // screen past this one needs one — say what to do instead of moving on.
+    if (!data.session) {
+      setLoading(false);
+      setNotice('Check your email to confirm the account, then sign in.');
+      return;
+    }
+
+    // A new account starts on the introduction, not an empty Home.
+    router.replace('/getting-started?welcome=1');
   }
 
   return (
@@ -93,6 +103,11 @@ export default function SignUpScreen() {
             {error ? (
               <View style={[styles.errorBox, mob && ms.errorBox]}>
                 <Text style={[styles.errorText, mob && ms.errorText]}>{error}</Text>
+              </View>
+            ) : null}
+            {notice ? (
+              <View style={[styles.errorBox, ms.noticeBox]}>
+                <Text style={[styles.errorText, ms.noticeText]}>{notice}</Text>
               </View>
             ) : null}
 
@@ -336,6 +351,8 @@ const ms = StyleSheet.create({
   input: { backgroundColor: RivalWarm.field, borderRadius: 12, borderWidth: 1, borderColor: RivalWarm.cardBorder, paddingVertical: 13, paddingHorizontal: 14, fontSize: 15, minWidth: 0, ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}) },
   passwordInput: { paddingVertical: 13, paddingHorizontal: 14, fontSize: 15, ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}) },
   soft: { color: RivalWarm.soft },
+  noticeBox: { backgroundColor: 'rgba(255,209,190,0.08)', borderWidth: 1, borderColor: 'rgba(255,209,190,0.25)', borderRadius: 12 },
+  noticeText: { color: RivalColors.accentText },
   linkStrong: { color: RivalColors.accentText, fontWeight: '700' },
   primary: { ...rm.primary, borderWidth: 0, marginTop: 6 } as any,
 });
